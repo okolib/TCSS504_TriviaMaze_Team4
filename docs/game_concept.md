@@ -76,7 +76,7 @@ Planned scripts/classes:
 - `SaveLoad` (serialize/deserialize game state to file or DB)
 
 #### View (GUI)
-**GUI Library:** PyQt6 (or Tkinter if team chooses simpler)
+**GUI Library:** PyQt6 (or Tkinter)
 - `MainWindow` (overall layout)
 - `MazeView` (renders grid, player, exit, doors)
 - `QuestionDialog` (shows question + choices)
