@@ -207,4 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 # specstory
+.specstory/.DS_Store
+docs/.DS_Store
 .specstory/
+docs/.specstory/
+.DS_Store
