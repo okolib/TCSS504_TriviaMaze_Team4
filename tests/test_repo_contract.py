@@ -12,10 +12,10 @@ import sys
 import os
 import json
 
-# Ensure the tests directory is on the path for mock imports
-sys.path.insert(0, os.path.dirname(__file__))
+# Add project root to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from mock_db import Repository
+from db import Repository
 
 SAVE_FILE = "test_save.json"
 

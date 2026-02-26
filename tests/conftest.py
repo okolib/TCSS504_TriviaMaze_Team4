@@ -8,16 +8,10 @@ These are referenced in docs/interface-tests.md Section 5.
 import sys
 import os
 
-# ---------------------------------------------------------------------------
-# Import helpers: currently uses mocks; switch to real modules when available.
-#
-# TO SWITCH TO REAL MODULES:
-#   Replace:  from tests.mock_maze import Direction
-#   With:     from maze import Direction
-# ---------------------------------------------------------------------------
-sys.path.insert(0, os.path.dirname(__file__))
+# Add project root to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from mock_maze import Direction
+from maze import Direction
 
 
 def _navigate_to_trivia_room(m):

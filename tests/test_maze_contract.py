@@ -11,10 +11,10 @@ TO SWITCH TO REAL MODULE: Replace 'from mock_maze import ...' with 'from maze im
 import sys
 import os
 
-# Ensure the tests directory is on the path for mock imports
-sys.path.insert(0, os.path.dirname(__file__))
+# Add project root to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from mock_maze import (
+from maze import (
     Maze, Position, Direction, DoorState, GameStatus, GameState, TriviaQuestion,
 )
 from conftest import _navigate_to_trivia_room, _get_wrong_key
