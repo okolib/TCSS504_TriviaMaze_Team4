@@ -90,7 +90,7 @@ def test_save_and_load_game_roundtrip():
     """P0-28: Full roundtrip: maze → engine.save → file → engine.load → maze."""
     m = Maze()
     repo = Repository()
-    engine = Engine(m, repo, save_file=SAVE_FILE)
+    engine = Engine(m, repo, save_filepath=SAVE_FILE)
 
     # Play a move
     m.move(Direction.SOUTH)
@@ -100,7 +100,7 @@ def test_save_and_load_game_roundtrip():
 
     # Create a fresh maze + engine, load into it
     m2 = Maze()
-    engine2 = Engine(m2, repo, save_file=SAVE_FILE)
+    engine2 = Engine(m2, repo, save_filepath=SAVE_FILE)
     success = engine2.load_game()
     assert success is True
     assert m2.get_player_position() == Position(1, 0)
@@ -184,6 +184,6 @@ def test_load_game_with_no_save_returns_false():
     """P1-7: Loading when no save file exists returns False gracefully."""
     m = Maze()
     repo = Repository()
-    engine = Engine(m, repo, save_file=SAVE_FILE)
+    engine = Engine(m, repo, save_filepath=SAVE_FILE)
     success = engine.load_game()
     assert success is False
