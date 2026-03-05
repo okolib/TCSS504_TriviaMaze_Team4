@@ -57,9 +57,16 @@ class SaveRecord(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     slot_name: str = "default"
     state_json: str            # JSON string of the game state dict
+
+class LastAskedRecord(SQLModel, table=True):
+    """Tracks the last question asked per figure to avoid immediate repeats.
+    Persisted in DB so it survives process restarts (Ctrl+C)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    figure_name: str = Field(unique=True)  # one row per figure
+    last_question_id: int      # FK-like ref to QuestionRecord.id
 ```
 
-> `FigureRecord` separates the figure's identity from the questions (inspired by Megan's RFC). This lets us track which figures are defeated independently of which questions have been asked.
+> `FigureRecord` separates the figure's identity from the questions (inspired by Megan's RFC). `LastAskedRecord` prevents the same question from appearing on consecutive encounters, even across game restarts.
 
 #### Updated Repository protocol
 
@@ -87,6 +94,8 @@ class RepositoryProtocol(Protocol):
         Filters by figure_name so each figure only asks from their own pool.
         Dict keys: figure_name, zone, question_text, choices, correct_key.
         Side effect: marks the question as asked (has_been_asked = True).
+        Anti-repeat: excludes the last question asked for this figure
+        (tracked via LastAskedRecord, persisted across process restarts).
         Returns None if all questions for that figure have been asked."""
         ...
 
@@ -106,7 +115,7 @@ class RepositoryProtocol(Protocol):
 
 #### Seed data
 
-Each wax figure gets a **pool of 3–5 questions** so replays feel fresh. The DB filters `WHERE figure_name = ? AND has_been_asked = FALSE` and picks one randomly. Example pools:
+Each wax figure gets a **pool of 3–5 questions** so replays feel fresh. The DB filters `WHERE figure_name = ? AND has_been_asked = FALSE AND id != <last_asked_id>` and picks one randomly. The `LastAskedRecord` table persists the last question ID per figure so that even if the player restarts (Ctrl+C), they won't get the same question back-to-back. Example pools:
 
 | Figure | Zone | # Questions | Sample Topics |
 |--------|------|-------------|---------------|
@@ -352,14 +361,24 @@ class Engine:
         self._maze = maze
         self._repo = repo
         self._view = view  # NEW: injected View object
+        self._current_question = None   # Current DB-fetched question dict
+        self._confronted_figure = None  # Tracks which figure we've already fetched for
         ...
 
     def run(self):
+        self._repo.reset_questions()  # Reset question bank for a fresh game
         self._view.display_welcome()
         while self._maze.get_game_status() == GameStatus.PLAYING:
             fog_map = self._maze.get_fog_map()
             self._view.display_fog_map(fog_map)
             self._view.display_room(...)
+            # Only fetch question on FIRST entry to figure room
+            # (_confronted_figure prevents re-fetching on every loop iteration)
+            if room.figure_name and room.figure_name not in state.defeated_figures:
+                if self._confronted_figure != room.figure_name:
+                    q = self._repo.get_random_question(room.figure_name)
+                    self._current_question = q
+                    self._confronted_figure = room.figure_name
             command = self._view.get_input()
             self._handle_command(command)
         self._view.display_endgame(...)
@@ -375,12 +394,15 @@ sequenceDiagram
     participant DB as Repository
     participant V as View
 
+    Note over E: On game start: repo.reset_questions()
     P->>E: moves into room
     E->>M: get_room(position)
     M-->>E: Room{figure_name="Da Vinci"}
     E->>M: is "Da Vinci" in defeated_figures?
     M-->>E: No
+    Note over E: _confronted_figure != "Da Vinci" → fetch
     E->>DB: get_random_question("Da Vinci")
+    Note over DB: Excludes LastAskedRecord.last_question_id
     DB-->>E: {question_text, choices, correct_key}
     E->>V: display_confrontation(question_dict)
     V-->>P: "The figure stirs... Da Vinci confronts you!"

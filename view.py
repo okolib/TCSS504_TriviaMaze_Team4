@@ -7,12 +7,37 @@ Imports maze types only — never imports db.
 """
 
 import os
+from enum import Enum
+from dataclasses import dataclass
 from typing import Optional
 
 from maze import (
-    Direction, DoorState, GameStatus, RoomVisibility,
-    FogMapCell, Position, Room, GameState,
+    Direction, DoorState, GameStatus,
+    Position, Room, GameState,
 )
+
+# RoomVisibility and FogMapCell are added by the maze team on feature/fog-of-war.
+# Define local stubs so view.py works before that branch is merged.
+try:
+    from maze import RoomVisibility, FogMapCell
+except ImportError:
+    class RoomVisibility(Enum):
+        """Fog of War visibility states (stub — replaced when maze team merges)."""
+        HIDDEN = "hidden"
+        VISIBLE = "visible"
+        VISITED = "visited"
+        CURRENT = "current"
+
+    @dataclass
+    class FogMapCell:
+        """One cell in the fog map (stub — replaced when maze team merges)."""
+        position: Position
+        visibility: RoomVisibility
+        has_trivia: bool = False
+        figure_name: Optional[str] = None
+        is_entrance: bool = False
+        is_exit: bool = False
+        doors: Optional[dict] = None
 
 
 # ======================================================================
@@ -230,21 +255,21 @@ class View:
         """Show the themed welcome banner."""
         banner = (
             f"\n{Colors.BOLD}"
-            "╔══════════════════════════════════════════════════════════════╗\n"
-            "║              WAXWORKS: THE MIDNIGHT CURSE                   ║\n"
-            "╠══════════════════════════════════════════════════════════════╣\n"
-            "║                                                              ║\n"
-            "║   The doors slam shut behind you.                            ║\n"
-            "║   The Grand Hall of History stretches into darkness.         ║\n"
-            "║   Your hand... is it shinier than before?                    ║\n"
-            "║                                                              ║\n"
-            "║   Find the exit before the Curse Meter reaches 100%          ║\n"
-            "║   or become the newest exhibit — forever.                    ║\n"
-            "║                                                              ║\n"
-            "╠══════════════════════════════════════════════════════════════╣\n"
-            "║  Commands: move <north|south|east|west>  answer <A|B|C>     ║\n"
-            "║            save  load  map  quit                             ║\n"
-            "╚══════════════════════════════════════════════════════════════╝"
+            "+--------------------------------------------------------------+\n"
+            "|             WAXWORKS: THE MIDNIGHT CURSE                     |\n"
+            "+--------------------------------------------------------------+\n"
+            "|                                                              |\n"
+            "|   The doors slam shut behind you.                            |\n"
+            "|   The Grand Hall of History stretches into darkness.         |\n"
+            "|   Your hand... is it shinier than before?                    |\n"
+            "|                                                              |\n"
+            "|   Find the exit before the Curse Meter reaches 100%          |\n"
+            "|   or become the newest exhibit -- forever.                   |\n"
+            "|                                                              |\n"
+            "+--------------------------------------------------------------+\n"
+            "|  Commands: move <north|south|east|west>  answer <A|B|C>      |\n"
+            "|            save  load  map  quit                             |\n"
+            "+--------------------------------------------------------------+"
             f"{Colors.RESET}\n"
         )
         print(banner)
@@ -263,12 +288,23 @@ class View:
             lines.append(f"{Colors.SUCCESS}You see the Exit ahead!{Colors.RESET}")
 
         # Zone-specific flavor text
-        if room.zone and room.zone in ZONE_TEXT:
-            zone = ZONE_TEXT[room.zone]
-            if room.figure_name and room.figure_name not in game_state.defeated_figures:
-                lines.append(f"\n{Colors.INFO}{zone['entrance']}{Colors.RESET}")
+        # Backward-compat: old Room has 'trivia', new Room has 'figure_name'/'zone'
+        zone = getattr(room, "zone", None)
+        figure_name = getattr(room, "figure_name", None)
+        defeated = getattr(game_state, "defeated_figures",
+                           getattr(game_state, "answered_figures", []))
+
+        # Fall back to trivia-based figure name if new fields aren't available
+        if figure_name is None and hasattr(room, "trivia") and room.trivia is not None:
+            figure_name = room.trivia.figure_name
+            zone = getattr(room.trivia, "zone", None)
+
+        if zone and zone in ZONE_TEXT:
+            zone_info = ZONE_TEXT[zone]
+            if figure_name and figure_name not in defeated:
+                lines.append(f"\n{Colors.INFO}{zone_info['entrance']}{Colors.RESET}")
             else:
-                lines.append(f"\n{Colors.DIM}{zone['ambient']}{Colors.RESET}")
+                lines.append(f"\n{Colors.DIM}{zone_info['ambient']}{Colors.RESET}")
         elif not room.is_entrance and not room.is_exit:
             lines.append(f"\n{Colors.DIM}{CORRIDOR_TEXT['empty']}{Colors.RESET}")
 
@@ -289,45 +325,77 @@ class View:
         print("\n".join(lines))
 
     def display_fog_map(self, fog_map: list[list[FogMapCell]]) -> None:
-        """Render the fog-of-war ASCII map."""
+        """Render the museum-themed fog-of-war map."""
         rows = len(fog_map)
         cols = len(fog_map[0]) if rows > 0 else 0
 
-        lines = []
-        lines.append(f"\n{Colors.BOLD}  THE GRAND HALL OF HISTORY{Colors.RESET}")
+        WING_NAMES = ["FOYER", "ART", "HISTORY", "ANCIENT", "EXIT"]
 
-        # Column headers
-        header = "    " + "".join(f"  {c}   " for c in range(cols))
+        lines = []
+
+        # Museum Directory header (framed, exact 39-char content width)
+        lines.append("")
+        lines.append(f"  {Colors.BOLD}{Colors.WARNING}+---------------------------------------+{Colors.RESET}")
+        lines.append(f"  {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}  {Colors.BOLD}MUSEUM DIRECTORY{Colors.RESET}                     {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}")
+        lines.append(f"  {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}  {Colors.DIM}The Grand Hall of History{Colors.RESET}            {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}")
+        lines.append(f"  {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}               N                       {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}")
+        lines.append(f"  {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}           W - + - E                   {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}")
+        lines.append(f"  {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}               S                       {Colors.BOLD}{Colors.WARNING}|{Colors.RESET}")
+        lines.append(f"  {Colors.BOLD}{Colors.WARNING}+---------------------------------------+{Colors.RESET}")
+
+        # Column headers (free-standing grid, no side borders)
+        header = "           "
+        for c in range(cols):
+            header += f"  {c}   "
         lines.append(header)
 
-        # Top border
-        lines.append("  ┌" + "┬".join(["─────"] * cols) + "┐")
+        # Top grid border
+        lines.append("         ┌" + "┬".join(["─────"] * cols) + "┐")
 
         for r in range(rows):
-            # Cell content row
-            row_str = f"{r} │"
+            wing = WING_NAMES[r] if r < len(WING_NAMES) else f"W{r}"
+            wing_label = f"{Colors.DIM}{wing:<7}{Colors.RESET}"
+
+            # Cell content row with lock separators
+            row_str = f"  {wing_label}│"
             for c in range(cols):
                 cell = fog_map[r][c]
-                row_str += self._render_fog_cell(cell) + "│"
+                row_str += self._render_fog_cell(cell)
+
+                if c < cols - 1:
+                    east_locked = False
+                    if (cell.doors and Direction.EAST in cell.doors
+                            and cell.doors[Direction.EAST] == DoorState.LOCKED
+                            and cell.visibility != RoomVisibility.HIDDEN):
+                        east_locked = True
+                    if east_locked:
+                        row_str += f"{Colors.WARNING}#{Colors.RESET}"
+                    else:
+                        row_str += "│"
+                else:
+                    row_str += "│"
+
             lines.append(row_str)
 
-            # Horizontal passage row (between rows)
+            # Passage row between grid rows
             if r < rows - 1:
-                passage_str = "  ├"
+                passage_str = "         ├"
                 for c in range(cols):
                     cell = fog_map[r][c]
-                    # Check if there's a south connection visible
                     south_visible = False
+                    south_locked = False
                     if cell.doors and Direction.SOUTH in cell.doors:
                         door = cell.doors[Direction.SOUTH]
                         if door != DoorState.WALL:
                             south_visible = True
+                        if door == DoorState.LOCKED:
+                            south_locked = True
 
                     if south_visible and cell.visibility != RoomVisibility.HIDDEN:
-                        if cell.doors[Direction.SOUTH] == DoorState.OPEN:
-                            passage_str += f"{Colors.SUCCESS}──│──{Colors.RESET}"
+                        if south_locked:
+                            passage_str += f"{Colors.WARNING}══#══{Colors.RESET}"
                         else:
-                            passage_str += f"{Colors.WARNING}══╪══{Colors.RESET}"
+                            passage_str += f"{Colors.SUCCESS}──│──{Colors.RESET}"
                     else:
                         passage_str += "─────"
 
@@ -336,8 +404,23 @@ class View:
                 passage_str += "┤"
                 lines.append(passage_str)
 
-        # Bottom border
-        lines.append("  └" + "┴".join(["─────"] * cols) + "┘")
+        # Bottom grid border
+        lines.append("         └" + "┴".join(["─────"] * cols) + "┘")
+
+        # Legend
+        lines.append("")
+        lines.append(
+            f"  {Colors.BOLD}@{Colors.RESET} You   "
+            f"{Colors.INFO}EN{Colors.RESET} Entry   "
+            f"{Colors.SUCCESS}EX{Colors.RESET} Exit   "
+            f"{Colors.DIM}[]{Colors.RESET} Figure   "
+            f"{Colors.WARNING}#{Colors.RESET} Locked"
+        )
+        lines.append(
+            f"  {Colors.DIM}░░{Colors.RESET} Visited  "
+            f"·· Seen   "
+            f"{Colors.HIDDEN}▓▓{Colors.RESET} Fog"
+        )
 
         print("\n".join(lines))
 
@@ -345,6 +428,17 @@ class View:
         """Display the result of a move attempt."""
         if result == "moved":
             print(f"\n{Colors.SUCCESS}You move {direction}.{Colors.RESET}")
+        elif result == "staircase":
+            if direction in ("south", "s"):
+                print(
+                    f"\n{Colors.INFO}You descend a winding staircase...{Colors.RESET}"
+                    f"\n{Colors.DIM}The air grows colder as you step into a new wing.{Colors.RESET}"
+                )
+            else:
+                print(
+                    f"\n{Colors.INFO}You climb back up the stairs...{Colors.RESET}"
+                    f"\n{Colors.DIM}Familiar hallways stretch before you.{Colors.RESET}"
+                )
         elif result == "locked":
             print(
                 f"\n{Colors.WARNING}The gate to the {direction} is sealed. "
@@ -359,42 +453,73 @@ class View:
             print(f"\n{Colors.DIM}You can't go that way.{Colors.RESET}")
 
     def display_confrontation(self, question_dict: dict) -> None:
-        """Display a wax figure confrontation with the trivia question."""
+        """Display a wax figure confrontation with the trivia question.
+
+        Dynamically sizes the box to fit the longest content line.
+        Wraps long questions so they don't overflow the border.
+        """
+        import textwrap
+
         figure = question_dict.get("figure_name", "Unknown Figure")
         question = question_dict.get("question_text", "")
         choices = question_dict.get("choices", {})
 
-        lines = []
-        lines.append(f"\n{Colors.BOLD}┌──────────────────────────────────────────────────┐{Colors.RESET}")
-        lines.append(f"{Colors.BOLD}│{Colors.RESET}                                                  {Colors.BOLD}│{Colors.RESET}")
-        lines.append(f"{Colors.BOLD}│{Colors.RESET}   {Colors.INFO}A wax figure stirs...{Colors.RESET}                          {Colors.BOLD}│{Colors.RESET}")
-        lines.append(f"{Colors.BOLD}│{Colors.RESET}                                                  {Colors.BOLD}│{Colors.RESET}")
-        lines.append(
-            f"{Colors.BOLD}│   The eyes of {Colors.WARNING}{figure.upper()}{Colors.RESET}"
-            f"{Colors.BOLD} snap open.{Colors.RESET}"
-        )
-        lines.append(
-            f"{Colors.BOLD}│{Colors.RESET}   {Colors.INFO}Wax cracks along the jaw as the figure confronts you:{Colors.RESET}"
-        )
-        lines.append(f"{Colors.BOLD}│{Colors.RESET}                                                  {Colors.BOLD}│{Colors.RESET}")
+        # Build plain-text content lines first to measure widths
+        header_text = "A wax figure stirs..."
+        name_text = f"The eyes of {figure.upper()} snap open."
+        desc_text = "Wax cracks along the jaw as it confronts you:"
+        q_text = f'"{question}"'
 
-        # Question text (wrap if needed)
-        lines.append(f"{Colors.BOLD}│{Colors.RESET}   {Colors.INFO}\"{question}\"{Colors.RESET}")
-        lines.append(f"{Colors.BOLD}│{Colors.RESET}                                                  {Colors.BOLD}│{Colors.RESET}")
-
-        # Choices
+        choice_lines = []
         if isinstance(choices, dict):
             for key, text in choices.items():
-                lines.append(f"{Colors.BOLD}│{Colors.RESET}   {key}) {text}")
+                choice_lines.append(f"{key}) {text}")
         elif isinstance(choices, list):
-            # Support list format: [{"key": "A", "text": "..."}, ...]
             for i, choice in enumerate(choices):
                 key = choice.get("key", chr(65 + i))
                 text = choice.get("text", str(choice))
-                lines.append(f"{Colors.BOLD}│{Colors.RESET}   {key}) {text}")
+                choice_lines.append(f"{key}) {text}")
 
-        lines.append(f"{Colors.BOLD}│{Colors.RESET}                                                  {Colors.BOLD}│{Colors.RESET}")
-        lines.append(f"{Colors.BOLD}└──────────────────────────────────────────────────┘{Colors.RESET}")
+        # Calculate inner width: max of all content + 6 chars padding (3 left + 3 right)
+        all_content = [header_text, name_text, desc_text, q_text] + choice_lines
+        min_w = max(len(line) for line in all_content) + 6
+        w = max(min_w, 40)  # at least 40 chars wide
+
+        # Wrap question if still too wide for reasonable terminal (cap at 72)
+        max_w = 72
+        if w > max_w:
+            w = max_w
+            wrap_width = w - 6  # 3 padding each side
+            q_wrapped = textwrap.wrap(q_text, width=wrap_width)
+        else:
+            q_wrapped = [q_text]
+
+        def _pad_line(text, inner_w):
+            """Return a formatted box line with proper padding."""
+            import re
+            # Strip ANSI escape codes to measure visible width
+            visible = re.sub(r'\033\[[0-9;]*m', '', text)
+            pad = max(0, inner_w - len(visible) - 3)
+            return f"{Colors.BOLD}|{Colors.RESET}   {text}{' ' * pad}{Colors.BOLD}|{Colors.RESET}"
+
+        lines = []
+        lines.append(f"\n{Colors.BOLD}+{'-' * w}+{Colors.RESET}")
+        lines.append(f"{Colors.BOLD}|{Colors.RESET}{' ' * w}{Colors.BOLD}|{Colors.RESET}")
+        lines.append(_pad_line(f"{Colors.INFO}{header_text}{Colors.RESET}", w))
+        lines.append(f"{Colors.BOLD}|{Colors.RESET}{' ' * w}{Colors.BOLD}|{Colors.RESET}")
+        lines.append(_pad_line(f"The eyes of {Colors.WARNING}{figure.upper()}{Colors.RESET}{Colors.BOLD} snap open.{Colors.RESET}", w))
+        lines.append(_pad_line(f"{Colors.DIM}{desc_text}{Colors.RESET}", w))
+        lines.append(f"{Colors.BOLD}|{Colors.RESET}{' ' * w}{Colors.BOLD}|{Colors.RESET}")
+
+        for qline in q_wrapped:
+            lines.append(_pad_line(f"{Colors.INFO}{qline}{Colors.RESET}", w))
+        lines.append(f"{Colors.BOLD}|{Colors.RESET}{' ' * w}{Colors.BOLD}|{Colors.RESET}")
+
+        for cl in choice_lines:
+            lines.append(_pad_line(cl, w))
+
+        lines.append(f"{Colors.BOLD}|{Colors.RESET}{' ' * w}{Colors.BOLD}|{Colors.RESET}")
+        lines.append(f"{Colors.BOLD}+{'-' * w}+{Colors.RESET}")
 
         print("\n".join(lines))
 
@@ -489,21 +614,28 @@ class View:
         )
 
     def _render_fog_cell(self, cell: FogMapCell) -> str:
-        """Render a single fog map cell as a 5-char string."""
+        """Render a single fog map cell as a 5-char ASCII string."""
+        FIGURE_INITIALS = {
+            "Leonardo da Vinci": "DV",
+            "Abraham Lincoln": "AL",
+            "Cleopatra": "CL",
+        }
+
         if cell.visibility == RoomVisibility.CURRENT:
-            return f"{Colors.BOLD}  ★  {Colors.RESET}"
+            return f"{Colors.BOLD}  @  {Colors.RESET}"
         elif cell.visibility == RoomVisibility.VISITED:
             if cell.has_trivia and cell.figure_name:
-                return f"{Colors.DIM} 🗿  {Colors.RESET}"
+                initials = FIGURE_INITIALS.get(cell.figure_name, "??")
+                return f"{Colors.DIM} [{initials}]{Colors.RESET}"
             elif cell.is_exit:
-                return f"{Colors.SUCCESS} EXIT{Colors.RESET}"
+                return f"{Colors.SUCCESS} EX  {Colors.RESET}"
             elif cell.is_entrance:
-                return f"{Colors.DIM}  ░  {Colors.RESET}"
+                return f"{Colors.INFO} EN  {Colors.RESET}"
             else:
-                return f"{Colors.DIM}  ░  {Colors.RESET}"
+                return f"{Colors.DIM}  ░░ {Colors.RESET}"
         elif cell.visibility == RoomVisibility.VISIBLE:
             if cell.is_exit:
-                return f"{Colors.SUCCESS} EXIT{Colors.RESET}"
+                return f"{Colors.SUCCESS} EX  {Colors.RESET}"
             return f"  ·· "
         else:  # HIDDEN
             return f"{Colors.HIDDEN}  ▓▓ {Colors.RESET}"
@@ -512,7 +644,7 @@ class View:
                          total_rooms: int, figures_defeated: int,
                          total_figures: int) -> None:
         """Display the victory sequence."""
-        # Narrative
+        w = 40
         print(
             f"\n  {Colors.SUCCESS}The last gate opens...{Colors.RESET}\n"
             f"\n  Warm orange light floods the hallway."
@@ -520,63 +652,58 @@ class View:
             f"\n  Behind you, the figures slump — lifeless once more.\n"
         )
 
-        # Victory box
-        print(
-            f"{Colors.BOLD}{Colors.SUCCESS}"
-            "  ╔═══════════════════════════════════════╗\n"
-            "  ║     THE CURSE IS BROKEN.              ║\n"
-            "  ║     Dawn breaks over the museum.      ║\n"
-            "  ║     You are free.                     ║\n"
-            "  ╠═══════════════════════════════════════╣\n"
-            f"  ║  Rooms explored:  {rooms_explored:2d}/{total_rooms:<16d}║\n"
-            f"  ║  Figures defeated: {figures_defeated}/{total_figures:<16d}║\n"
-            f"  ║  Curse Level:     {curse_level:<17d}║\n"
-            "  ╚═══════════════════════════════════════╝"
-            f"{Colors.RESET}\n"
-        )
+        print(f"{Colors.BOLD}{Colors.SUCCESS}")
+        print(f"  +{'-' * w}+")
+        print(f"  |{'THE CURSE IS BROKEN.':^{w}}|")
+        print(f"  |{'Dawn breaks over the museum.':^{w}}|")
+        print(f"  |{'You are free.':^{w}}|")
+        print(f"  +{'-' * w}+")
+        r_line = f"  Rooms explored:  {rooms_explored}/{total_rooms}"
+        f_line = f"  Figures defeated: {figures_defeated}/{total_figures}"
+        c_line = f"  Curse Level:     {curse_level}"
+        print(f"  |{r_line:<{w}}|")
+        print(f"  |{f_line:<{w}}|")
+        print(f"  |{c_line:<{w}}|")
+        print(f"  +{'-' * w}+")
+        print(f"{Colors.RESET}")
 
     def _display_game_over(self, curse_level: int, rooms_explored: int,
                            total_rooms: int, figures_defeated: int,
                            total_figures: int) -> None:
         """Display the game over sequence."""
-        # Phase 1: Transformation
-        print(
-            f"\n  {Colors.DANGER}Your skin hardens...{Colors.RESET}"
-        )
+        w = 40
+        print(f"\n  {Colors.DANGER}Your skin hardens...{Colors.RESET}")
         print(f"  {Colors.DANGER}Your joints lock...{Colors.RESET}")
         print(f"  {Colors.DANGER}Your eyes glaze over...{Colors.RESET}\n")
 
-        # Phase 2: Museum plaque
-        print(
-            f"{Colors.WARNING}"
-            '  ┌─────────────────────────────────────┐\n'
-            '  │                                     │\n'
-            '  │   "THE NEWEST EXHIBIT"              │\n'
-            '  │                                     │\n'
-            '  │    Name:  Unknown Explorer          │\n'
-            '  │    Date:  The Midnight Hour         │\n'
-            '  │    Cause: Curiosity                 │\n'
-            '  │                                     │\n'
-            '  │    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   │\n'
-            '  │    ░░░  PERMANENT  COLLECTION  ░░░  │\n'
-            '  │    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   │\n'
-            '  │                                     │\n'
-            '  └─────────────────────────────────────┘'
-            f"{Colors.RESET}\n"
-        )
+        pw = 38
+        print(f"{Colors.WARNING}")
+        print(f"  +{'-' * pw}+")
+        print(f"  |{'':>{pw}}|")
+        print(f"  |{chr(34)+'THE NEWEST EXHIBIT'+chr(34):^{pw}}|")
+        print(f"  |{'':>{pw}}|")
+        print(f"  |{'Name:  Unknown Explorer':^{pw}}|")
+        print(f"  |{'Date:  The Midnight Hour':^{pw}}|")
+        print(f"  |{'Cause: Curiosity':^{pw}}|")
+        print(f"  |{'':>{pw}}|")
+        print(f"  |{'PERMANENT  COLLECTION':^{pw}}|")
+        print(f"  |{'':>{pw}}|")
+        print(f"  +{'-' * pw}+")
+        print(f"{Colors.RESET}")
 
-        # Phase 3: Game over stats
-        print(
-            f"{Colors.BOLD}{Colors.DANGER}"
-            "  ╔═══════════════════════════════════════╗\n"
-            "  ║          === GAME OVER ===            ║\n"
-            "  ╠═══════════════════════════════════════╣\n"
-            f"  ║  Rooms explored:  {rooms_explored:2d}/{total_rooms:<16d}║\n"
-            f"  ║  Figures defeated: {figures_defeated}/{total_figures:<16d}║\n"
-            f"  ║  Curse Level:     {curse_level:<17d}║\n"
-            "  ╚═══════════════════════════════════════╝"
-            f"{Colors.RESET}\n"
-        )
+        print(f"{Colors.BOLD}{Colors.DANGER}")
+        print(f"  +{'-' * w}+")
+        print(f"  |{'=== GAME OVER ===':^{w}}|")
+        print(f"  +{'-' * w}+")
+        r_line = f"  Rooms explored:  {rooms_explored}/{total_rooms}"
+        f_line = f"  Figures defeated: {figures_defeated}/{total_figures}"
+        c_line = f"  Curse Level:     {curse_level}"
+        print(f"  |{r_line:<{w}}|")
+        print(f"  |{f_line:<{w}}|")
+        print(f"  |{c_line:<{w}}|")
+        print(f"  +{'-' * w}+")
+        print(f"{Colors.RESET}")
+
 
     def _get_ambient_line(self) -> str:
         """Cycle through ambient/idle text lines."""
