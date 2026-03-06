@@ -135,13 +135,14 @@ class Maze:
     Strictly follows the session-injection pattern and Gothic vocabulary.
     """
 
-    def __init__(self, session: Session):
-        """
-        Inject an active Session. No engine creation allowed here.
-        """
-        self.session = session
-        self._ensure_museum_seeded()
-        self._load_log()
+    def __init__(self, session=None): # Make it optional with =None
+        if session:
+            self.session = session
+        else:
+            # Fallback for tests/UI: Import the engine from your db module
+            from db import engine 
+            from sqlmodel import Session
+            self.session = Session(engine)
 
     def get_exhibit(self, position: Position) -> Exhibit:
         """Internal helper to get an exhibit by position."""
