@@ -260,6 +260,8 @@ class RepositoryProtocol(Protocol):
         Filters by figure_name so each figure only asks from their own pool.
         Dict keys: figure_name, zone, question_text, choices, correct_key.
         Side effect: marks the question as asked (has_been_asked = True).
+        Anti-repeat: avoids returning the same question as the previous call
+        for this figure (persisted in LastAskedRecord, survives process restarts).
         Returns None if all questions for that figure have been asked."""
         ...
 
@@ -299,6 +301,12 @@ class SaveRecord(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     slot_name: str = "default"
     state_json: str
+
+class LastAskedRecord(SQLModel, table=True):
+    """Tracks the last question asked per figure to avoid immediate repeats."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    figure_name: str = Field(unique=True)
+    last_question_id: int
 ```
 
 ---
@@ -349,8 +357,11 @@ class Engine:
 
     def run(self) -> None:
         """Main game loop:
+        0. Call repo.reset_questions() to reset the question bank for a fresh game.
         1. Display fog map and current room (via View).
-        2. If room has undefeated figure: fetch question from DB, display confrontation.
+        2. If room has undefeated figure: fetch question from DB on first entry
+           (tracked via _confronted_figure to avoid re-fetching on every loop
+           iteration). Display confrontation.
         3. Read player input (via View).
         4. Dispatch to maze.move() or maze.attempt_answer(answer, correct_key).
         5. Check win/loss conditions.
@@ -400,7 +411,9 @@ class ViewProtocol(Protocol):
         ...
 
     def display_confrontation(self, question_dict: dict) -> None:
-        """Display a wax figure confrontation with the trivia question."""
+        """Display a wax figure confrontation with the trivia question.
+        Box dynamically sizes to fit the longest content line.
+        Wraps long questions at 72 chars to prevent overflow."""
         ...
 
     def display_answer_result(self, result: str, curse_level: int) -> None:

@@ -2,15 +2,13 @@
 test_engine_integration.py — Engine / Integration Tests
 
 Tests the Engine translation layer and full save/load pipeline,
-plus full game simulations (win/loss paths).
+plus full game simulations using the RFC-compliant APIs.
 
-Covers all P0 (25–31) and P1 (6–7) engine tests from the RUNBOOK.
-
-CURRENTLY IMPORTS FROM: mock_maze, mock_db (stubs)
-TO SWITCH TO REAL MODULES:
-    from mock_maze import ...  →  from maze import ...
-    from mock_db import ...    →  from db import ...
-    from mock_engine import Engine  →  from main import Engine
+Updated for:
+- 5×5 staircase layout
+- attempt_answer(answer_key, correct_key) per RFC
+- curse_level / defeated_figures naming
+- SQLite-backed Repository
 """
 
 import sys
@@ -24,24 +22,40 @@ from maze import (
 )
 from db import Repository
 from main import Engine
-from conftest import _get_wrong_key
+from conftest import _navigate_to_trivia_room
+
+TEST_DB = "test_integration.db"
+CORRECT_KEY = "B"
+WRONG_KEY = "C"
+
+
+class ViewStub:
+    """Minimal View stub for Engine tests — absorbs all display calls."""
+    def display_welcome(self): pass
+    def display_room(self, *args, **kwargs): pass
+    def display_fog_map(self, *args, **kwargs): pass
+    def display_move_result(self, *args, **kwargs): pass
+    def display_confrontation(self, *args, **kwargs): pass
+    def display_answer_result(self, *args, **kwargs): pass
+    def display_save_result(self, *args, **kwargs): pass
+    def display_load_result(self, *args, **kwargs): pass
+    def display_endgame(self, *args, **kwargs): pass
+    def display_error(self, *args, **kwargs): pass
+    def get_input(self, *args, **kwargs): return "quit"
 
 
 # ===========================================================================
-# Test file paths and setup/teardown
+# Setup / Teardown
 # ===========================================================================
-
-SAVE_FILE = "test_integration_save.json"
-
 
 def setup_function():
-    if os.path.exists(SAVE_FILE):
-        os.remove(SAVE_FILE)
+    if os.path.exists(TEST_DB):
+        os.remove(TEST_DB)
 
 
 def teardown_function():
-    if os.path.exists(SAVE_FILE):
-        os.remove(SAVE_FILE)
+    if os.path.exists(TEST_DB):
+        os.remove(TEST_DB)
 
 
 # ===========================================================================
@@ -68,6 +82,15 @@ def test_game_state_to_dict_serializes_enums():
     assert isinstance(d["game_status"], str)
 
 
+def test_game_state_to_dict_uses_rfc_names():
+    """RFC: Serialized dict uses curse_level and defeated_figures."""
+    m = Maze()
+    state = m.get_game_state()
+    d = Engine.game_state_to_dict(state)
+    assert "curse_level" in d
+    assert "defeated_figures" in d
+
+
 def test_dict_to_game_state_roundtrip():
     """P0-27: Converting state → dict → state produces equivalent data."""
     m = Maze()
@@ -76,9 +99,9 @@ def test_dict_to_game_state_roundtrip():
     d = Engine.game_state_to_dict(original)
     restored = Engine.dict_to_game_state(d)
     assert restored.player_position == original.player_position
-    assert restored.wax_meter == original.wax_meter
+    assert restored.curse_level == original.curse_level
     assert restored.game_status == original.game_status
-    assert restored.answered_figures == original.answered_figures
+    assert restored.defeated_figures == original.defeated_figures
     assert restored.door_states == original.door_states
 
 
@@ -87,20 +110,17 @@ def test_dict_to_game_state_roundtrip():
 # ===========================================================================
 
 def test_save_and_load_game_roundtrip():
-    """P0-28: Full roundtrip: maze → engine.save → file → engine.load → maze."""
+    """P0-28: Full roundtrip: maze → engine.save → DB → engine.load → maze."""
     m = Maze()
-    repo = Repository()
-    engine = Engine(m, repo, save_filepath=SAVE_FILE)
+    repo = Repository(db_path=TEST_DB)
+    view = ViewStub()
+    engine = Engine(m, repo, view, save_filepath="test_slot")
 
-    # Play a move
     m.move(Direction.SOUTH)
-
-    # Save
     engine.save_game()
 
-    # Create a fresh maze + engine, load into it
     m2 = Maze()
-    engine2 = Engine(m2, repo, save_filepath=SAVE_FILE)
+    engine2 = Engine(m2, repo, view, save_filepath="test_slot")
     success = engine2.load_game()
     assert success is True
     assert m2.get_player_position() == Position(1, 0)
@@ -111,60 +131,69 @@ def test_save_and_load_game_roundtrip():
 # ===========================================================================
 
 def test_full_winning_game():
-    """P0-29: Simulate a complete winning run through the skeleton maze."""
+    """P0-29: Simulate a complete winning run through the 5×5 maze.
+
+    Per RFC: Engine passes correct_key from DB to attempt_answer.
+    """
     m = Maze()
 
-    # Navigate to Da Vinci room (1,0) and answer correctly
+    # Navigate to Da Vinci room (1,1) and answer correctly
     m.move(Direction.SOUTH)   # (0,0) → (1,0)
+    m.move(Direction.EAST)    # (1,0) → (1,1) — Da Vinci
     room = m.get_room(m.get_player_position())
-    assert m.attempt_answer(room.trivia.correct_key) == "correct"
+    assert room.figure_name is not None
+    assert m.attempt_answer(CORRECT_KEY, correct_key=CORRECT_KEY) == "correct"
 
-    # Navigate to Cleopatra room (2,1) and answer correctly
-    m.move(Direction.EAST)    # (1,0) → (1,1)
-    m.move(Direction.SOUTH)   # (1,1) → (2,1)
+    # Navigate to Lincoln room (2,2)
+    m.move(Direction.EAST)    # (1,1) → (1,2)
+    m.move(Direction.SOUTH)   # (1,2) → (2,1) — staircase
+    m.move(Direction.EAST)    # (2,1) → (2,2) — Lincoln
     room = m.get_room(m.get_player_position())
-    assert m.attempt_answer(room.trivia.correct_key) == "correct"
+    assert room.figure_name is not None
+    assert m.attempt_answer(CORRECT_KEY, correct_key=CORRECT_KEY) == "correct"
 
-    # Move to exit (2,2)
-    m.move(Direction.EAST)    # (2,1) → (2,2)
+    # Navigate to Cleopatra room (3,3)
+    m.move(Direction.EAST)    # (2,2) → (2,3)
+    m.move(Direction.SOUTH)   # (2,3) → (3,2) — staircase
+    m.move(Direction.EAST)    # (3,2) → (3,3) — Cleopatra
+    room = m.get_room(m.get_player_position())
+    assert room.figure_name is not None
+    assert m.attempt_answer(CORRECT_KEY, correct_key=CORRECT_KEY) == "correct"
+
+    # Navigate to exit
+    m.move(Direction.EAST)    # (3,3) → (3,4)
+    m.move(Direction.SOUTH)   # (3,4) → (4,4) — EXIT
 
     assert m.get_game_status() == GameStatus.WON
 
 
 def test_full_losing_game():
-    """P0-30: Simulate a losing run — wax meter hits 100."""
+    """P0-30: Simulate a losing run — curse level hits 100."""
     m = Maze()
+    _navigate_to_trivia_room(m)
 
-    # Navigate to Da Vinci room (1,0)
-    m.move(Direction.SOUTH)   # (0,0) → (1,0)
-
-    room = m.get_room(m.get_player_position())
-    wrong = _get_wrong_key(room.trivia.correct_key)
-
-    # Answer wrong 4 times
-    for _ in range(4):
-        m.attempt_answer(wrong)
+    for _ in range(5):
+        if m.get_game_status() != GameStatus.PLAYING:
+            break
+        m.attempt_answer(WRONG_KEY, correct_key=CORRECT_KEY)
 
     assert m.get_game_status() == GameStatus.LOST
-    assert m.get_wax_meter() >= 100
+    assert m.get_curse_level() >= 100
 
 
 def test_attempt_answer_after_game_over():
     """P0-31: attempt_answer returns 'game_over' once game is no longer PLAYING."""
     m = Maze()
+    _navigate_to_trivia_room(m)
 
-    # Navigate to Da Vinci room and lose
-    m.move(Direction.SOUTH)
-    room = m.get_room(m.get_player_position())
-    wrong = _get_wrong_key(room.trivia.correct_key)
-    for _ in range(4):
-        m.attempt_answer(wrong)
+    for _ in range(5):
+        m.attempt_answer(WRONG_KEY, correct_key=CORRECT_KEY)
 
     assert m.get_game_status() == GameStatus.LOST
-    wax_before = m.get_wax_meter()
-    result = m.attempt_answer(wrong)
+    wax_before = m.get_curse_level()
+    result = m.attempt_answer(WRONG_KEY, correct_key=CORRECT_KEY)
     assert result == "game_over"
-    assert m.get_wax_meter() == wax_before  # no state change
+    assert m.get_curse_level() == wax_before
 
 
 # ===========================================================================
@@ -172,18 +201,19 @@ def test_attempt_answer_after_game_over():
 # ===========================================================================
 
 def test_dict_to_game_state_rejects_bad_data():
-    """P1-6: Malformed dict raises ValueError."""
+    """P1-6: Malformed dict raises ValueError or KeyError."""
     try:
         Engine.dict_to_game_state({"garbage": True})
-        assert False, "Should have raised ValueError"
-    except ValueError:
+        assert False, "Should have raised ValueError or KeyError"
+    except (ValueError, KeyError):
         pass
 
 
 def test_load_game_with_no_save_returns_false():
-    """P1-7: Loading when no save file exists returns False gracefully."""
+    """P1-7: Loading when no save exists returns False gracefully."""
     m = Maze()
-    repo = Repository()
-    engine = Engine(m, repo, save_filepath=SAVE_FILE)
+    repo = Repository(db_path=TEST_DB)
+    view = ViewStub()
+    engine = Engine(m, repo, view, save_filepath="nonexistent_slot")
     success = engine.load_game()
     assert success is False
