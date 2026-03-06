@@ -1,8 +1,9 @@
 """Waxworks: The Midnight Curse — Engine Module
 
-The orchestrator: imports maze and db, owns all I/O, runs the game loop.
-This is the ONLY module allowed to use input() / print() or import other
-game modules.
+The orchestrator: imports maze, db, and view. Runs the game loop.
+Delegates ALL rendering to the View module.
+
+Emergency fallback implementation — local only, not pushed.
 """
 
 import sys
@@ -16,104 +17,98 @@ from maze import (
 class Engine:
     """Orchestrates the game loop, translation layer, and save/load."""
 
-    def __init__(self, maze, repo, save_filepath="save_game.json"):
+    def __init__(self, maze, repo, view, save_filepath="default"):
         """Inject dependencies.
 
         Parameters
         ----------
         maze : MazeProtocol
-            Domain object that owns all game rules.
         repo : RepositoryProtocol
-            Persistence object for JSON I/O.
-        save_filepath : str
-            Path used for save/load operations.
+        view : ViewProtocol
+        save_filepath : str — slot name for save/load
         """
         self._maze = maze
         self._repo = repo
+        self._view = view
         self._save_filepath = save_filepath
+        self._current_question = None  # Current DB-fetched question dict
+        self._confronted_figure = None  # Track which figure we've already fetched a question for
 
     # ------------------------------------------------------------------
-    # Translation Layer
+    # Serialization helpers (unchanged from skeleton)
     # ------------------------------------------------------------------
 
     @staticmethod
     def game_state_to_dict(state: GameState) -> dict:
-        """Convert a GameState dataclass to a JSON-safe dict.
-
-        - Position      -> {"row": int, "col": int}
-        - GameStatus    -> str
-        - Direction      -> str (value)
-        - DoorState      -> str (value)
-        - door_states    -> list of {"position": {…}, "doors": {…}}
-        """
+        """Convert a GameState dataclass to a JSON-safe dict."""
         door_states_list = []
-        for (row, col), doors in state.door_states.items():
-            door_states_list.append({
-                "position": {"row": row, "col": col},
-                "doors": {d.value: s.value for d, s in doors.items()},
-            })
+        for (r, c), doors in state.door_states.items():
+            door_entry = {
+                "position": {"row": r, "col": c},
+                "doors": {d.value: s.value for d, s in doors.items()}
+            }
+            door_states_list.append(door_entry)
 
         return {
             "player_position": {
                 "row": state.player_position.row,
                 "col": state.player_position.col,
             },
-            "wax_meter": state.wax_meter,
+            "curse_level": state.curse_level,
             "game_status": state.game_status.value,
-            "answered_figures": list(state.answered_figures),
+            "defeated_figures": state.defeated_figures,
             "visited_positions": [
-                {"row": p.row, "col": p.col}
-                for p in state.visited_positions
+                {"row": p.row, "col": p.col} for p in state.visited_positions
             ],
             "door_states": door_states_list,
         }
 
     @staticmethod
     def dict_to_game_state(data: dict) -> GameState:
-        """Convert a JSON-safe dict back to a GameState dataclass.
+        """Convert a JSON-safe dict back to a GameState dataclass."""
+        if not isinstance(data, dict):
+            raise ValueError("Expected a dict for game state")
 
-        Raises ValueError if the dict is malformed.
-        """
-        try:
-            player_pos = Position(
-                row=data["player_position"]["row"],
-                col=data["player_position"]["col"],
-            )
-            game_status = GameStatus(data["game_status"])
-            visited = [
-                Position(row=p["row"], col=p["col"])
-                for p in data["visited_positions"]
-            ]
-            door_states: dict[tuple[int, int], dict[Direction, DoorState]] = {}
-            for entry in data["door_states"]:
-                pos = entry["position"]
-                key = (pos["row"], pos["col"])
-                doors = {
-                    Direction(d): DoorState(s)
-                    for d, s in entry["doors"].items()
-                }
-                door_states[key] = doors
+        player_pos = Position(
+            data["player_position"]["row"],
+            data["player_position"]["col"],
+        )
 
-            return GameState(
-                player_position=player_pos,
-                wax_meter=data["wax_meter"],
-                game_status=game_status,
-                answered_figures=list(data["answered_figures"]),
-                visited_positions=visited,
-                door_states=door_states,
-            )
-        except (KeyError, ValueError, TypeError) as e:
-            raise ValueError(f"Malformed game state data: {e}") from e
+        door_states = {}
+        for entry in data.get("door_states", []):
+            pos_data = entry["position"]
+            pos_tuple = (pos_data["row"], pos_data["col"])
+            doors = {
+                Direction(k): DoorState(v)
+                for k, v in entry["doors"].items()
+            }
+            door_states[pos_tuple] = doors
+
+        return GameState(
+            player_position=player_pos,
+            curse_level=data.get("curse_level", data.get("wax_meter", 0)),
+            game_status=GameStatus(data["game_status"]),
+            defeated_figures=data.get("defeated_figures", data.get("answered_figures", [])),
+            visited_positions=[
+                Position(p["row"], p["col"])
+                for p in data.get("visited_positions", [])
+            ],
+            door_states=door_states,
+        )
 
     # ------------------------------------------------------------------
     # Save / Load
     # ------------------------------------------------------------------
 
-    def save_game(self) -> None:
+    def save_game(self):
         """Get state from maze -> convert to dict -> pass to repo.save()."""
         state = self._maze.get_game_state()
         data = self.game_state_to_dict(state)
-        self._repo.save(data, self._save_filepath)
+        try:
+            self._repo.save(data, self._save_filepath)
+            self._view.display_save_result(True)
+        except Exception as e:
+            self._view.display_save_result(False, str(e))
 
     def load_game(self) -> bool:
         """repo.load() -> convert dict to GameState -> maze.restore().
@@ -122,15 +117,15 @@ class Engine:
         """
         try:
             data = self._repo.load(self._save_filepath)
-        except (ValueError, IOError):
-            return False
-        if data is None:
-            return False
-        try:
+            if data is None:
+                self._view.display_load_result(False)
+                return False
             state = self.dict_to_game_state(data)
             self._maze.restore_game_state(state)
+            self._view.display_load_result(True)
             return True
-        except (ValueError, KeyError):
+        except (ValueError, KeyError) as e:
+            self._view.display_error(f"Failed to load: {e}")
             return False
 
     # ------------------------------------------------------------------
@@ -138,165 +133,128 @@ class Engine:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        """Main game loop.
-
-        1. Display current room, available directions, wax meter.
-        2. Read player input (move / answer / save / quit).
-        3. Dispatch to maze.move() or maze.attempt_answer().
-        4. Check win/loss conditions.
-        5. Repeat until game_status != PLAYING.
-        """
-        print("\n=== WAXWORKS: THE MIDNIGHT CURSE ===")
-        print("You are an urban explorer trapped in the Grand Hall of History.")
-        print("Find the exit before your Wax Meter reaches 100%!")
-        print("\nCommands: move <north|south|east|west>, answer <A|B|C>,"
-              " save, load, quit\n")
+        """Main game loop with View-based rendering."""
+        # Reset question bank for a fresh game (per RFC §8)
+        self._repo.reset_questions()
+        self._view.display_welcome()
 
         while self._maze.get_game_status() == GameStatus.PLAYING:
-            self._display_room()
+            # Display current room
+            pos = self._maze.get_player_position()
+            room = self._maze.get_room(pos)
+            state = self._maze.get_game_state()
+            self._view.display_room(room, pos, state.wax_meter, state)
 
-            try:
-                command = input("\n> ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print("\nGoodbye!")
+            # Always show the fog map
+            fog_map = self._maze.get_fog_map()
+            self._view.display_fog_map(fog_map)
+
+            # Check for trivia confrontation (undefeated figure in room)
+            # Only fetch a NEW question when entering for the first time
+            if (room.figure_name and
+                    room.figure_name not in state.defeated_figures):
+                if self._confronted_figure != room.figure_name:
+                    # First time seeing this figure — fetch from DB
+                    q = self._repo.get_random_question(room.figure_name)
+                    if q:
+                        self._current_question = q
+                        self._confronted_figure = room.figure_name
+                        self._view.display_confrontation(q)
+                    else:
+                        # All questions exhausted — auto-open gate
+                        self._current_question = None
+                        self._confronted_figure = room.figure_name
+                        self._view.display_error(
+                            "The figure sighs and steps aside. "
+                            "The curse releases its grip on this gate."
+                        )
+                else:
+                    # Already confronted — re-display same question
+                    if self._current_question:
+                        self._view.display_confrontation(self._current_question)
+            else:
+                # Not in a figure room, or figure already defeated
+                self._confronted_figure = None
+                self._current_question = None
+
+            # Get player input
+            command = self._view.get_input()
+            if not command or command == "quit":
                 return
-
-            if not command:
-                continue
 
             self._handle_command(command)
 
-        self._display_endgame()
+        # Game ended (won or lost)
+        state = self._maze.get_game_state()
+        self._view.display_endgame(
+            status=self._maze.get_game_status(),
+            curse_level=state.wax_meter,
+            rooms_explored=len(state.visited_positions),
+            total_rooms=25,
+            figures_defeated=len(state.answered_figures),
+            total_figures=3,
+        )
 
     # ------------------------------------------------------------------
-    # Display helpers (private)
-    # ------------------------------------------------------------------
-
-    def _display_room(self) -> None:
-        """Print the current room state to the console."""
-        pos = self._maze.get_player_position()
-        room = self._maze.get_room(pos)
-        wax = self._maze.get_wax_meter()
-        game_state = self._maze.get_game_state()
-
-        # Room header
-        print(f"\n--- Room ({pos.row}, {pos.col}) ---")
-        if room.is_entrance:
-            print("The Entrance — moonlight spills in behind you.")
-        elif room.is_exit:
-            print("You see the Exit ahead!")
-
-        # Trivia question (only if unanswered)
-        if (room.trivia is not None
-                and room.trivia.figure_name not in game_state.answered_figures):
-            t = room.trivia
-            print(f"\nA wax figure stirs... {t.figure_name}!")
-            print(f'"{t.question_text}"')
-            for key, text in t.choices.items():
-                print(f"  {key}) {text}")
-
-        # Wax meter bar
-        filled = wax // 10
-        empty = 10 - filled
-        bar = "\u2588" * filled + "\u2591" * empty
-        print(f"\nWax Meter: [{bar}] {wax}%")
-
-        # Available doors
-        dir_strs = []
-        for d in Direction:
-            state = room.doors[d]
-            if state != DoorState.WALL:
-                dir_strs.append(f"{d.value} ({state.value})")
-        print(f"Doors: {', '.join(dir_strs) if dir_strs else 'None'}")
-
-    def _display_endgame(self) -> None:
-        """Print the win or loss message."""
-        status = self._maze.get_game_status()
-        if status == GameStatus.WON:
-            print("\nYOU ESCAPED! The curse is broken. Dawn breaks over the museum.")
-            print("=== YOU WIN ===\n")
-        elif status == GameStatus.LOST:
-            print("\nYour skin hardens... you are now the newest exhibit.")
-            print(f"Wax Meter: {self._maze.get_wax_meter()}%")
-            print("=== GAME OVER ===\n")
-
-    # ------------------------------------------------------------------
-    # Command handling (private)
+    # Command dispatch
     # ------------------------------------------------------------------
 
     def _handle_command(self, command: str) -> None:
         """Parse and dispatch a player command."""
-        parts = command.split()
+        parts = command.strip().lower().split()
+        if not parts:
+            return
+
         action = parts[0]
 
-        if action == "move" and len(parts) == 2:
+        if action == "move" and len(parts) >= 2:
             self._handle_move(parts[1])
-        elif action == "answer" and len(parts) == 2:
-            self._handle_answer(parts[1].upper())
+        elif action == "answer" and len(parts) >= 2:
+            self._handle_answer(parts[1])
         elif action == "save":
-            self._handle_save()
+            self.save_game()
         elif action == "load":
-            self._handle_load()
+            self.load_game()
+        elif action == "map":
+            self._handle_map()
         elif action == "quit":
-            print("Goodbye, brave explorer.")
-            sys.exit(0)
+            return
         else:
-            print("Unknown command. "
-                  "Try: move <direction>, answer <A|B|C>, save, load, quit")
+            self._view.display_error(
+                f"Unknown command: '{command}'. "
+                "Try: move <direction>, answer <A|B|C>, save, load, map, quit"
+            )
 
     def _handle_move(self, direction_str: str) -> None:
         """Attempt to move the player in the given direction."""
         try:
-            direction = Direction(direction_str)
+            direction = Direction(direction_str.lower())
         except ValueError:
-            print(f"Invalid direction: '{direction_str}'. "
-                  "Use north, south, east, or west.")
+            self._view.display_error(
+                f"Invalid direction: '{direction_str}'. "
+                "Use: north, south, east, west"
+            )
             return
 
         result = self._maze.move(direction)
-        if result == "moved":
-            print(f"You move {direction_str}.")
-        elif result == "locked":
-            print("The way is sealed. Answer the figure's question first.")
-        elif result == "wall":
-            print("There's nothing but solid wall in that direction.")
-        elif result == "invalid":
-            print("You can't go that way.")
+        self._view.display_move_result(result, direction_str)
 
     def _handle_answer(self, answer_key: str) -> None:
-        """Submit a trivia answer."""
-        if answer_key not in ("A", "B", "C"):
-            print("Invalid answer. Choose A, B, or C.")
-            return
-
-        result = self._maze.attempt_answer(answer_key)
+        """Submit a trivia answer using the DB-fetched correct key."""
+        correct_key = None
+        if self._current_question:
+            correct_key = self._current_question.get("correct_key")
+        result = self._maze.attempt_answer(answer_key, correct_key)
+        state = self._maze.get_game_state()
+        self._view.display_answer_result(result, state.wax_meter)
+        # Clear current question on correct answer
         if result == "correct":
-            print("Correct! The passage unlocks with a grinding of stone.")
-        elif result == "wrong":
-            print("Wrong! The wax creeps further up your arm...")
-            print(f"Wax Meter: {self._maze.get_wax_meter()}%")
-        elif result == "no_trivia":
-            print("There is no wax figure here to answer.")
-        elif result == "already_answered":
-            print("You've already answered this figure's question.")
-        elif result == "game_over":
-            print("The game is already over.")
+            self._current_question = None
 
-    def _handle_save(self) -> None:
-        """Save the current game state to file."""
-        try:
-            self.save_game()
-            print("Game saved.")
-        except (IOError, OSError) as e:
-            print(f"Failed to save: {e}")
-
-    def _handle_load(self) -> None:
-        """Load a previously saved game from file."""
-        success = self.load_game()
-        if success:
-            print("Game loaded.")
-        else:
-            print("No saved game found.")
+    def _handle_map(self) -> None:
+        """Display the fog-of-war map."""
+        fog_map = self._maze.get_fog_map()
+        self._view.display_fog_map(fog_map)
 
 
 # ======================================================================
@@ -306,20 +264,25 @@ class Engine:
 if __name__ == "__main__":
     from maze import Maze
     from db import Repository
+    from view import View
 
     maze = Maze()
-    repo = Repository()
-    engine = Engine(maze, repo)
+    repo = Repository(db_path="waxworks.db")
+    view = View()
+    engine = Engine(maze, repo, view)
 
-    print("\nWould you like to load a saved game? (yes/no)")
+    # Offer to load a saved game
     try:
-        choice = input("> ").strip().lower()
-        if choice in ("yes", "y"):
+        response = view.get_input("\n  Load saved game? (y/n) > ")
+        if response == "y":
             if engine.load_game():
-                print("Saved game loaded successfully!")
+                pass  # load_game already shows confirmation
             else:
-                print("No saved game found. Starting a new game.")
+                pass  # load_game already shows "no save found"
+        else:
+            # New game — reset question bank for fresh questions
+            repo.reset_questions()
     except (EOFError, KeyboardInterrupt):
-        print("\nStarting a new game.")
+        pass
 
     engine.run()
