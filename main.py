@@ -3,7 +3,7 @@
 The orchestrator: imports maze, db, and view. Runs the game loop.
 Delegates ALL rendering to the View module.
 
-Emergency fallback implementation — local only, not pushed.
+Supports both CLI (blocking loop) and Qt (callback-driven) modes.
 """
 
 import sys
@@ -24,7 +24,7 @@ class Engine:
         ----------
         maze : MazeProtocol
         repo : RepositoryProtocol
-        view : ViewProtocol
+        view : ViewProtocol (View or QtView)
         save_filepath : str — slot name for save/load
         """
         self._maze = maze
@@ -35,7 +35,7 @@ class Engine:
         self._confronted_figure = None  # Track which figure we've already fetched a question for
 
     # ------------------------------------------------------------------
-    # Serialization helpers (unchanged from skeleton)
+    # Serialization helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -129,78 +129,82 @@ class Engine:
             return False
 
     # ------------------------------------------------------------------
-    # Game Loop
+    # State Refresh (used by both CLI and Qt)
     # ------------------------------------------------------------------
 
-    def run(self) -> None:
-        """Main game loop with View-based rendering."""
-        # Reset question bank for a fresh game (per RFC §8)
-        self._repo.reset_questions()
-        self._view.display_welcome()
+    def refresh_display(self) -> None:
+        """Push current game state to the View.
 
-        while self._maze.get_game_status() == GameStatus.PLAYING:
-            # Display current room
-            pos = self._maze.get_player_position()
-            room = self._maze.get_room(pos)
-            state = self._maze.get_game_state()
-            self._view.display_room(room, pos, state.wax_meter, state)
+        Displays the current room, fog map, and any active confrontation.
+        Called after every command in Qt mode, and inside the CLI loop.
+        """
+        if self._maze.get_game_status() != GameStatus.PLAYING:
+            return
 
-            # Always show the fog map
-            fog_map = self._maze.get_fog_map()
-            self._view.display_fog_map(fog_map)
-
-            # Check for trivia confrontation (undefeated figure in room)
-            # Only fetch a NEW question when entering for the first time
-            if (room.figure_name and
-                    room.figure_name not in state.defeated_figures):
-                if self._confronted_figure != room.figure_name:
-                    # First time seeing this figure — fetch from DB
-                    q = self._repo.get_random_question(room.figure_name)
-                    if q:
-                        self._current_question = q
-                        self._confronted_figure = room.figure_name
-                        self._view.display_confrontation(q)
-                    else:
-                        # All questions exhausted — auto-open gate
-                        self._current_question = None
-                        self._confronted_figure = room.figure_name
-                        self._view.display_error(
-                            "The figure sighs and steps aside. "
-                            "The curse releases its grip on this gate."
-                        )
-                else:
-                    # Already confronted — re-display same question
-                    if self._current_question:
-                        self._view.display_confrontation(self._current_question)
-            else:
-                # Not in a figure room, or figure already defeated
-                self._confronted_figure = None
-                self._current_question = None
-
-            # Get player input
-            command = self._view.get_input()
-            if not command or command == "quit":
-                return
-
-            self._handle_command(command)
-
-        # Game ended (won or lost)
+        pos = self._maze.get_player_position()
+        room = self._maze.get_room(pos)
         state = self._maze.get_game_state()
-        self._view.display_endgame(
-            status=self._maze.get_game_status(),
-            curse_level=state.wax_meter,
-            rooms_explored=len(state.visited_positions),
-            total_rooms=25,
-            figures_defeated=len(state.answered_figures),
-            total_figures=3,
-        )
+        self._view.display_room(room, pos, state.wax_meter, state)
+
+        # Always show the fog map
+        fog_map = self._maze.get_fog_map()
+        self._view.display_fog_map(fog_map)
+
+        # Check for trivia confrontation (undefeated figure in room)
+        if (room.figure_name and
+                room.figure_name not in state.defeated_figures):
+            if self._confronted_figure != room.figure_name:
+                # First time seeing this figure — fetch from DB
+                q = self._repo.get_random_question(room.figure_name)
+                if q:
+                    self._current_question = q
+                    self._confronted_figure = room.figure_name
+                    self._view.display_confrontation(q)
+                else:
+                    # All questions exhausted — auto-open gate
+                    self._current_question = None
+                    self._confronted_figure = room.figure_name
+                    self._view.display_error(
+                        "The figure sighs and steps aside. "
+                        "The curse releases its grip on this gate."
+                    )
+            else:
+                # Already confronted — re-display same question
+                if self._current_question:
+                    self._view.display_confrontation(self._current_question)
+        else:
+            # Not in a figure room, or figure already defeated
+            self._confronted_figure = None
+            self._current_question = None
+
+    def _check_endgame(self) -> bool:
+        """Check if the game has ended and display the result.
+
+        Returns True if game is over, False if still playing.
+        """
+        status = self._maze.get_game_status()
+        if status != GameStatus.PLAYING:
+            state = self._maze.get_game_state()
+            self._view.display_endgame(
+                status=status,
+                curse_level=state.wax_meter,
+                rooms_explored=len(state.visited_positions),
+                total_rooms=25,
+                figures_defeated=len(state.answered_figures),
+                total_figures=3,
+            )
+            return True
+        return False
 
     # ------------------------------------------------------------------
-    # Command dispatch
+    # Command Dispatch (public — callable from CLI loop or Qt signals)
     # ------------------------------------------------------------------
 
-    def _handle_command(self, command: str) -> None:
-        """Parse and dispatch a player command."""
+    def handle_command(self, command: str) -> None:
+        """Parse and dispatch a player command.
+
+        Public API: called by the CLI loop or via Qt's command_issued signal.
+        """
         parts = command.strip().lower().split()
         if not parts:
             return
@@ -208,24 +212,30 @@ class Engine:
         action = parts[0]
 
         if action == "move" and len(parts) >= 2:
-            self._handle_move(parts[1])
+            self.handle_move(parts[1])
         elif action == "answer" and len(parts) >= 2:
-            self._handle_answer(parts[1])
+            self.handle_answer(parts[1])
         elif action == "save":
             self.save_game()
         elif action == "load":
-            self.load_game()
+            if self.load_game():
+                self.refresh_display()
         elif action == "map":
-            self._handle_map()
+            self.handle_map()
         elif action == "quit":
-            return
+            self._handle_quit()
+        elif action == "help":
+            self._view.display_error(
+                "Commands: move <north|south|east|west>, answer <A|B|C>, "
+                "save, load, map, quit"
+            )
         else:
             self._view.display_error(
                 f"Unknown command: '{command}'. "
                 "Try: move <direction>, answer <A|B|C>, save, load, map, quit"
             )
 
-    def _handle_move(self, direction_str: str) -> None:
+    def handle_move(self, direction_str: str) -> None:
         """Attempt to move the player in the given direction."""
         try:
             direction = Direction(direction_str.lower())
@@ -238,8 +248,10 @@ class Engine:
 
         result = self._maze.move(direction)
         self._view.display_move_result(result, direction_str)
+        self.refresh_display()
+        self._check_endgame()
 
-    def _handle_answer(self, answer_key: str) -> None:
+    def handle_answer(self, answer_key: str) -> None:
         """Submit a trivia answer using the DB-fetched correct key."""
         correct_key = None
         if self._current_question:
@@ -247,14 +259,75 @@ class Engine:
         result = self._maze.attempt_answer(answer_key, correct_key)
         state = self._maze.get_game_state()
         self._view.display_answer_result(result, state.wax_meter)
+
         # Clear current question on correct answer
         if result == "correct":
             self._current_question = None
+            self._confronted_figure = None
 
-    def _handle_map(self) -> None:
+        self.refresh_display()
+        self._check_endgame()
+
+    def handle_map(self) -> None:
         """Display the fog-of-war map."""
         fog_map = self._maze.get_fog_map()
         self._view.display_fog_map(fog_map)
+
+    def _handle_quit(self) -> None:
+        """Handle quit command."""
+        if hasattr(self._view, 'close'):
+            self._view.close()
+        sys.exit(0)
+
+    # ------------------------------------------------------------------
+    # CLI Game Loop (blocking — unchanged behavior)
+    # ------------------------------------------------------------------
+
+    def run(self) -> None:
+        """Main CLI game loop with View-based rendering."""
+        self._repo.reset_questions()
+        self._view.display_welcome()
+
+        while self._maze.get_game_status() == GameStatus.PLAYING:
+            self.refresh_display()
+
+            # Get player input (blocking in CLI mode)
+            command = self._view.get_input()
+            if not command or command == "quit":
+                return
+
+            self.handle_command(command)
+
+        # Game ended (won or lost) — already handled by _check_endgame
+        # but call once more in case loop exited naturally
+        self._check_endgame()
+
+    # ------------------------------------------------------------------
+    # Qt Game Mode (callback-driven — non-blocking)
+    # ------------------------------------------------------------------
+
+    def start_qt(self, app) -> None:
+        """Start the game in Qt mode.
+
+        Wires the QtView's command_issued signal to handle_command(),
+        resets questions, displays welcome, and starts the Qt event loop.
+
+        Parameters
+        ----------
+        app : QApplication
+        """
+        self._repo.reset_questions()
+
+        # Wire signal → callback
+        self._view.command_issued.connect(self.handle_command)
+
+        # Initial display
+        self._view.display_welcome()
+        self.refresh_display()
+
+        # Show the window and start Qt event loop
+        self._view.show()
+        app.exec()
 
 
 # ======================================================================
@@ -264,25 +337,53 @@ class Engine:
 if __name__ == "__main__":
     from maze import Maze
     from db import Repository
-    from view import View
 
     maze = Maze()
     repo = Repository(db_path="waxworks.db")
-    view = View()
-    engine = Engine(maze, repo, view)
 
-    # Offer to load a saved game
-    try:
-        response = view.get_input("\n  Load saved game? (y/n) > ")
-        if response == "y":
-            if engine.load_game():
-                pass  # load_game already shows confirmation
-            else:
-                pass  # load_game already shows "no save found"
+    if "--gui" in sys.argv:
+        # ---- Qt GUI Mode ----
+        from PySide6.QtWidgets import QApplication
+        from qt_view import QtView
+
+        app = QApplication(sys.argv)
+        view = QtView()
+        engine = Engine(maze, repo, view)
+
+        # Offer to load a saved game via dialog
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            view, "Waxworks",
+            "Load a saved game?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            engine.load_game()
         else:
-            # New game — reset question bank for fresh questions
             repo.reset_questions()
-    except (EOFError, KeyboardInterrupt):
-        pass
 
-    engine.run()
+        engine.start_qt(app)
+
+    else:
+        # ---- CLI Mode (original behavior) ----
+        from view import View
+
+        view = View()
+        engine = Engine(maze, repo, view)
+
+        # Offer to load a saved game
+        try:
+            response = view.get_input("\n  Load saved game? (y/n) > ")
+            if response == "y":
+                if engine.load_game():
+                    pass  # load_game already shows confirmation
+                else:
+                    pass  # load_game already shows "no save found"
+            else:
+                # New game — reset question bank for fresh questions
+                repo.reset_questions()
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+        engine.run()

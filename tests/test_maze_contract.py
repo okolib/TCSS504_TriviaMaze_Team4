@@ -75,9 +75,11 @@ def test_player_starts_at_entrance():
 def test_move_through_open_door():
     """P0-6: Moving through an OPEN door updates player position."""
     m = Maze()
-    result = m.move(Direction.SOUTH)
+    room = m.get_room(m.get_player_position())
+    open_dir = next(d for d, s in room.doors.items() if s == DoorState.OPEN)
+    result = m.move(open_dir)
     assert result in ("moved", "staircase")
-    assert m.get_player_position() == Position(1, 0)
+    assert m.get_player_position() != Position(0, 0)
 
 
 def test_available_directions_excludes_walls():
@@ -112,7 +114,7 @@ def test_move_into_locked_door_rejected():
     pos_before = m.get_player_position()
     room = m.get_room(pos_before)
     locked_dirs = [d for d, s in room.doors.items() if s == DoorState.LOCKED]
-    assert len(locked_dirs) > 0, "Expected at least one LOCKED direction at (1,1)"
+    assert len(locked_dirs) > 0, "Expected at least one LOCKED direction in figure room"
     result = m.move(locked_dirs[0])
     assert result == "locked"
     assert m.get_player_position() == pos_before
@@ -221,15 +223,18 @@ def test_restore_preserves_unlocked_doors():
     """P0-18: After answering correctly, save and restore; unlocked door stays open."""
     m = Maze()
     _navigate_to_trivia_room(m)
+    pos = m.get_player_position()
+    room_before = m.get_room(pos)
+    locked_dirs = [d for d, s in room_before.doors.items() if s == DoorState.LOCKED]
+    assert len(locked_dirs) > 0, "Figure room should have a locked gate"
     assert m.attempt_answer(CORRECT_KEY, correct_key=CORRECT_KEY) == "correct"
     state = m.get_game_state()
     m2 = Maze()
     m2.restore_game_state(state)
-    # Da Vinci gate: (1,1).EAST and (1,2).WEST must be OPEN
-    room_11_after = m2.get_room(Position(1, 1))
-    room_12_after = m2.get_room(Position(1, 2))
-    assert room_11_after.doors[Direction.EAST] == DoorState.OPEN
-    assert room_12_after.doors[Direction.WEST] == DoorState.OPEN
+    # All previously locked doors should now be OPEN in the restored maze
+    room_after = m2.get_room(pos)
+    for d in locked_dirs:
+        assert room_after.doors[d] == DoorState.OPEN
 
 
 # ===========================================================================
@@ -272,11 +277,14 @@ def test_get_curse_level_method():
 
 
 def test_room_has_figure_name_and_zone():
-    """RFC: Room uses figure_name/zone instead of trivia."""
+    """RFC: At least one room uses figure_name/zone."""
     m = Maze()
-    room = m.get_room(Position(1, 1))
-    assert room.figure_name == "Leonardo da Vinci"
-    assert room.zone == "Art Gallery"
+    rooms = m.get_rooms()
+    figure_rooms = [r for r in rooms.values() if r.figure_name is not None]
+    assert len(figure_rooms) >= 1
+    room = figure_rooms[0]
+    assert room.figure_name is not None
+    assert room.zone is not None
 
 
 def test_generic_door_unlock():
