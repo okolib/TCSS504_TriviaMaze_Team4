@@ -8,11 +8,14 @@ Uses trapezoid-based depth layers — no raycasting needed for a grid maze.
 Imports maze types only — never imports db.
 """
 
+import math
+from pathlib import Path
+
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QRectF, QPointF
+from PySide6.QtCore import Qt, QRectF, QPointF, QTimer
 from PySide6.QtGui import (
     QPainter, QColor, QFont, QPen, QBrush, QLinearGradient,
-    QRadialGradient, QPainterPath, QPolygonF,
+    QRadialGradient, QPainterPath, QPolygonF, QPixmap, QImage,
 )
 
 from maze import Direction, DoorState
@@ -73,23 +76,19 @@ class FPTheme:
     TEXT_GOLD = QColor(255, 210, 80)
 
 
-# Zone color tints — each row/wing has a distinct mood
-# (hue shift applied to walls, ceiling, floor)
 ZONE_TINTS = {
-    0: QColor(80, 70, 120),    # Row 0 — Foyer: cool blue-purple
-    1: QColor(110, 50, 60),    # Row 1 — Art Gallery: warm crimson
-    2: QColor(50, 90, 80),     # Row 2 — History: teal green
-    3: QColor(100, 85, 50),    # Row 3 — Ancient: sandy amber
-    4: QColor(50, 100, 70),    # Row 4 — Exit: emerald
+    0: QColor(80, 70, 120),    # Row 0 — Entrance: cool blue-purple
+    1: QColor(110, 50, 60),    # Row 1 — warm crimson
+    2: QColor(50, 90, 80),     # Row 2 — teal green
+    3: QColor(100, 85, 50),    # Row 3 — sandy amber
+    4: QColor(80, 60, 110),    # Row 4 — violet
+    5: QColor(60, 100, 70),    # Row 5 — emerald
+    6: QColor(100, 60, 80),    # Row 6 — rose
+    7: QColor(50, 100, 90),    # Row 7 — Exit: aquamarine
 }
 
-# Column brightness offsets — subtle variation within a row
 COL_BRIGHTNESS = {
-    0: -10,
-    1: 0,
-    2: 5,
-    3: -5,
-    4: 10,
+    0: -10, 1: 0, 2: 5, 3: -5, 4: 10, 5: -8, 6: 3, 7: -3,
 }
 
 
@@ -120,6 +119,16 @@ _DELTA = {
 }
 
 
+_PORTRAIT_DIR = Path(__file__).parent / "assets" / "portraits"
+_PORTRAIT_FILES = {
+    "Leonardo DiCaprio": "dicaprio_wax.png",
+    "Michael Jackson": "jackson_wax.png",
+    "Abraham Lincoln": "lincoln_wax.png",
+    "Walt Disney": "disney_wax.png",
+    "Taylor Swift": "swift_wax.png",
+}
+
+
 class FirstPersonCanvas(QWidget):
     """Renders a first-person perspective of the maze corridor."""
 
@@ -127,7 +136,30 @@ class FirstPersonCanvas(QWidget):
         super().__init__(parent)
         self._fog_map = None
         self._player_pos = (0, 0)
-        self._facing = Direction.SOUTH  # Default facing
+        self._facing = Direction.SOUTH
+
+        # Walking animation state
+        self._walk_frame = 0
+        self._walk_total = 8
+        self._walking = False
+        self._walk_timer = QTimer(self)
+        self._walk_timer.setInterval(45)
+        self._walk_timer.timeout.connect(self._advance_walk)
+
+        # Figure come-to-life animation
+        self._figure_anim_frame = 0
+        self._figure_anim_active = False
+        self._figure_anim_timer = QTimer(self)
+        self._figure_anim_timer.setInterval(60)
+        self._figure_anim_timer.timeout.connect(self._advance_figure_anim)
+
+        # Pre-load portrait pixmaps
+        self._portraits: dict[str, QPixmap] = {}
+        for name, fname in _PORTRAIT_FILES.items():
+            path = _PORTRAIT_DIR / fname
+            if path.exists():
+                self._portraits[name] = QPixmap(str(path))
+
         self.setMinimumSize(500, 400)
         self.setStyleSheet("background-color: #080514;")
 
@@ -176,6 +208,32 @@ class FirstPersonCanvas(QWidget):
         self._facing = direction
         self.update()
 
+    def start_walk_animation(self) -> None:
+        """Trigger the corridor-zoom walking animation."""
+        self._walk_frame = 0
+        self._walking = True
+        self._walk_timer.start()
+
+    def start_figure_animation(self) -> None:
+        """Trigger the figure come-to-life animation (eye glow + sway)."""
+        self._figure_anim_frame = 0
+        self._figure_anim_active = True
+        self._figure_anim_timer.start()
+
+    def _advance_walk(self):
+        self._walk_frame += 1
+        if self._walk_frame >= self._walk_total:
+            self._walking = False
+            self._walk_timer.stop()
+        self.update()
+
+    def _advance_figure_anim(self):
+        self._figure_anim_frame += 1
+        if self._figure_anim_frame >= 30:
+            self._figure_anim_active = False
+            self._figure_anim_timer.stop()
+        self.update()
+
     # ------------------------------------------------------------------
     # Cell lookup helpers
     # ------------------------------------------------------------------
@@ -217,6 +275,16 @@ class FirstPersonCanvas(QWidget):
 
         w = self.width()
         h = self.height()
+
+        # Walking bobbing effect
+        if self._walking and self._walk_frame < self._walk_total:
+            t = self._walk_frame / self._walk_total
+            bob_y = math.sin(t * math.pi * 3) * 6
+            zoom = 1.0 + t * 0.08
+            painter.translate(0, bob_y)
+            painter.translate(w / 2, h / 2)
+            painter.scale(zoom, zoom)
+            painter.translate(-w / 2, -h / 2)
 
         # Draw the scene
         self._draw_ceiling(painter, w, h)
@@ -640,32 +708,79 @@ class FirstPersonCanvas(QWidget):
 
     def _draw_figure_silhouette(self, painter: QPainter, w: int, h: int,
                                  depth: int, name: str):
-        """Draw a character-specific wax figure silhouette."""
+        """Draw a wax figure — real portrait at depth 0, silhouette at depth 1."""
         if depth == 0:
             cx, cy, scale = w * 0.5, h * 0.48, 1.0
         else:
             cx, cy, scale = w * 0.5, h * 0.46, 0.5
 
-        # Red glow behind figure
-        glow = QRadialGradient(cx, cy, 45 * scale)
-        glow.setColorAt(0, FPTheme.FIGURE_GLOW)
+        sway_x = 0.0
+        glow_alpha = 60
+        if self._figure_anim_active and depth == 0:
+            t = self._figure_anim_frame / 30.0
+            sway_x = math.sin(t * math.pi * 4) * 3 * scale
+            glow_alpha = int(60 + 80 * abs(math.sin(t * math.pi * 6)))
+
+        glow = QRadialGradient(cx + sway_x, cy, 55 * scale)
+        glow.setColorAt(0, QColor(200, 60, 60, glow_alpha))
         glow.setColorAt(1, QColor(200, 60, 60, 0))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(glow))
-        painter.drawEllipse(QPointF(cx, cy), 55 * scale, 65 * scale)
+        painter.drawEllipse(QPointF(cx + sway_x, cy), 65 * scale, 75 * scale)
 
-        # Dispatch to character-specific drawing
-        name_lower = name.lower()
-        if "vinci" in name_lower or "leonardo" in name_lower:
-            self._draw_davinci(painter, cx, cy, scale)
-        elif "lincoln" in name_lower or "abraham" in name_lower:
-            self._draw_lincoln(painter, cx, cy, scale)
-        elif "cleopatra" in name_lower:
-            self._draw_cleopatra(painter, cx, cy, scale)
+        adj_cx = cx + sway_x
+
+        # At depth 0, draw the real portrait image if available
+        portrait = self._portraits.get(name)
+        if portrait and depth == 0:
+            img_h = int(h * 0.55)
+            scaled = portrait.scaledToHeight(
+                img_h, Qt.TransformationMode.SmoothTransformation
+            )
+            img_w = scaled.width()
+            draw_x = int(adj_cx - img_w / 2)
+            draw_y = int(cy - img_h * 0.55)
+
+            # Slight purple vignette overlay around the image
+            painter.setOpacity(0.92)
+            painter.drawPixmap(draw_x, draw_y, scaled)
+            painter.setOpacity(1.0)
+
+            # Subtle border glow
+            painter.setPen(QPen(QColor(230, 184, 50, 100), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(draw_x, draw_y, img_w, img_h))
+        elif portrait and depth == 1:
+            # Small thumbnail at distance
+            img_h = int(h * 0.22)
+            scaled = portrait.scaledToHeight(
+                img_h, Qt.TransformationMode.SmoothTransformation
+            )
+            img_w = scaled.width()
+            draw_x = int(cx - img_w / 2)
+            draw_y = int(cy - img_h * 0.5)
+            painter.setOpacity(0.6)
+            painter.drawPixmap(draw_x, draw_y, scaled)
+            painter.setOpacity(1.0)
         else:
-            self._draw_generic_figure(painter, cx, cy, scale)
+            # Fallback to geometric silhouette
+            name_lower = name.lower()
+            if "dicaprio" in name_lower:
+                self._draw_dicaprio(painter, adj_cx, cy, scale)
+            elif "jackson" in name_lower:
+                self._draw_jackson(painter, adj_cx, cy, scale)
+            elif "lincoln" in name_lower:
+                self._draw_lincoln(painter, adj_cx, cy, scale)
+            elif "disney" in name_lower:
+                self._draw_disney(painter, adj_cx, cy, scale)
+            elif "swift" in name_lower:
+                self._draw_swift(painter, adj_cx, cy, scale)
+            else:
+                self._draw_generic_figure(painter, adj_cx, cy, scale)
 
-        # Name label
+        if self._figure_anim_active and depth == 0:
+            self._draw_wax_particles(painter, adj_cx, cy, scale)
+
         if depth == 0:
             painter.setPen(FPTheme.TEXT_GOLD)
             painter.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
@@ -673,143 +788,147 @@ class FirstPersonCanvas(QWidget):
             painter.drawText(QRectF(cx - 100, cy + bh + 8, 200, 20),
                            Qt.AlignmentFlag.AlignCenter, name.upper())
 
-    # -- Da Vinci: beret, beard, paintbrush --
+    # -- DiCaprio: slicked-back hair, sharp suit, smirk --
 
-    def _draw_davinci(self, painter: QPainter, cx, cy, scale):
-        """Leonardo da Vinci — artist with beret and paintbrush."""
+    def _draw_dicaprio(self, painter: QPainter, cx, cy, scale):
         s = scale
-        body_color = QColor(90, 55, 55)
-        robe_color = QColor(70, 45, 50)
+        suit = QColor(50, 45, 60)
+        skin = QColor(110, 85, 70)
 
-        # Robe / body (wider, artistic flowing garment)
-        robe = QPainterPath()
-        robe.moveTo(cx - 22*s, cy + 50*s)      # bottom-left
-        robe.lineTo(cx - 18*s, cy - 5*s)        # waist left
-        robe.lineTo(cx - 14*s, cy - 25*s)       # shoulder left
-        robe.lineTo(cx + 14*s, cy - 25*s)       # shoulder right
-        robe.lineTo(cx + 18*s, cy - 5*s)        # waist right
-        robe.lineTo(cx + 22*s, cy + 50*s)       # bottom-right
-        robe.closeSubpath()
+        body = QPainterPath()
+        body.moveTo(cx - 18*s, cy + 50*s)
+        body.lineTo(cx - 15*s, cy + 5*s)
+        body.lineTo(cx - 16*s, cy - 25*s)
+        body.lineTo(cx + 16*s, cy - 25*s)
+        body.lineTo(cx + 15*s, cy + 5*s)
+        body.lineTo(cx + 18*s, cy + 50*s)
+        body.closeSubpath()
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(robe_color))
-        painter.drawPath(robe)
+        painter.setBrush(QBrush(suit))
+        painter.drawPath(body)
 
-        # Head (round, slightly larger for the genius)
-        painter.setBrush(QBrush(body_color))
-        painter.drawEllipse(QPointF(cx, cy - 35*s), 11*s, 13*s)
+        painter.setPen(QPen(QColor(60, 55, 70), 1.5*s))
+        painter.drawLine(QPointF(cx, cy - 8*s), QPointF(cx - 7*s, cy - 22*s))
+        painter.drawLine(QPointF(cx, cy - 8*s), QPointF(cx + 7*s, cy - 22*s))
 
-        # Beret (wide, floppy artist's cap)
-        beret = QPainterPath()
-        beret.moveTo(cx - 16*s, cy - 42*s)
-        beret.quadTo(cx - 18*s, cy - 58*s, cx, cy - 55*s)
-        beret.quadTo(cx + 14*s, cy - 52*s, cx + 12*s, cy - 42*s)
-        beret.closeSubpath()
-        painter.setBrush(QBrush(QColor(110, 40, 40)))
-        painter.drawPath(beret)
-
-        # Beard (long, flowing)
-        beard = QPainterPath()
-        beard.moveTo(cx - 8*s, cy - 26*s)
-        beard.quadTo(cx - 10*s, cy - 12*s, cx - 6*s, cy - 5*s)
-        beard.quadTo(cx, cy - 2*s, cx + 6*s, cy - 5*s)
-        beard.quadTo(cx + 10*s, cy - 12*s, cx + 8*s, cy - 26*s)
-        beard.closeSubpath()
-        painter.setBrush(QBrush(QColor(160, 150, 140)))
-        painter.drawPath(beard)
-
-        # Right arm holding paintbrush
-        painter.setPen(QPen(robe_color, 3*s))
-        painter.drawLine(QPointF(cx + 14*s, cy - 20*s),
-                        QPointF(cx + 28*s, cy + 5*s))
-        # Paintbrush
-        painter.setPen(QPen(QColor(139, 90, 43), 2*s))
-        painter.drawLine(QPointF(cx + 26*s, cy + 2*s),
-                        QPointF(cx + 35*s, cy - 18*s))
-        # Brush tip
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(200, 50, 30)))
-        painter.drawEllipse(QPointF(cx + 35*s, cy - 20*s), 3*s, 4*s)
+        painter.setBrush(QBrush(skin))
+        painter.drawEllipse(QPointF(cx, cy - 36*s), 10*s, 12*s)
 
-        # Eyes (warm amber — artist's gaze)
-        eye_color = QColor(220, 170, 60)
-        eye_y = cy - 36*s
-        painter.setBrush(QBrush(eye_color))
-        painter.drawEllipse(QPointF(cx - 5*s, eye_y), 2.5*s, 2*s)
-        painter.drawEllipse(QPointF(cx + 5*s, eye_y), 2.5*s, 2*s)
+        hair = QPainterPath()
+        hair.moveTo(cx - 11*s, cy - 38*s)
+        hair.quadTo(cx - 12*s, cy - 52*s, cx, cy - 50*s)
+        hair.quadTo(cx + 12*s, cy - 52*s, cx + 11*s, cy - 38*s)
+        hair.closeSubpath()
+        painter.setBrush(QBrush(QColor(80, 60, 40)))
+        painter.drawPath(hair)
+
+        eye_y = cy - 37*s
+        painter.setBrush(QBrush(QColor(100, 150, 200)))
+        painter.drawEllipse(QPointF(cx - 4*s, eye_y), 2.5*s, 2*s)
+        painter.drawEllipse(QPointF(cx + 4*s, eye_y), 2.5*s, 2*s)
+
+        painter.setPen(QPen(skin.darker(130), 1*s))
+        painter.drawLine(QPointF(cx - 3*s, cy - 30*s), QPointF(cx + 3*s, cy - 30*s))
+
+    # -- Michael Jackson: military jacket, single glove, curly hair --
+
+    def _draw_jackson(self, painter: QPainter, cx, cy, scale):
+        s = scale
+        jacket = QColor(130, 30, 30)
+        skin = QColor(100, 75, 60)
+
+        body = QPainterPath()
+        body.moveTo(cx - 16*s, cy + 50*s)
+        body.lineTo(cx - 14*s, cy + 5*s)
+        body.lineTo(cx - 15*s, cy - 25*s)
+        body.lineTo(cx + 15*s, cy - 25*s)
+        body.lineTo(cx + 14*s, cy + 5*s)
+        body.lineTo(cx + 16*s, cy + 50*s)
+        body.closeSubpath()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(jacket))
+        painter.drawPath(body)
+
+        painter.setPen(QPen(QColor(200, 170, 50), 1.5*s))
+        for i in range(4):
+            y_off = cy - 18*s + i * 8*s
+            painter.drawLine(QPointF(cx - 8*s, y_off), QPointF(cx + 8*s, y_off))
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(skin))
+        painter.drawEllipse(QPointF(cx, cy - 36*s), 10*s, 12*s)
+
+        hair = QPainterPath()
+        hair.moveTo(cx - 12*s, cy - 34*s)
+        hair.quadTo(cx - 16*s, cy - 55*s, cx, cy - 52*s)
+        hair.quadTo(cx + 16*s, cy - 55*s, cx + 12*s, cy - 34*s)
+        hair.closeSubpath()
+        painter.setBrush(QBrush(QColor(25, 20, 20)))
+        painter.drawPath(hair)
+
+        painter.setPen(QPen(jacket, 3*s))
+        painter.drawLine(QPointF(cx + 15*s, cy - 20*s), QPointF(cx + 28*s, cy + 5*s))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(220, 220, 220)))
+        painter.drawEllipse(QPointF(cx + 30*s, cy + 6*s), 4*s, 5*s)
+
+        eye_y = cy - 37*s
+        painter.setBrush(QBrush(QColor(60, 40, 30)))
+        painter.drawEllipse(QPointF(cx - 4*s, eye_y), 2.5*s, 2*s)
+        painter.drawEllipse(QPointF(cx + 4*s, eye_y), 2.5*s, 2*s)
 
     # -- Lincoln: stovepipe hat, angular body, bow tie --
 
     def _draw_lincoln(self, painter: QPainter, cx, cy, scale):
-        """Abraham Lincoln — tall hat, angular, presidential."""
         s = scale
         suit_color = QColor(40, 35, 45)
         skin_color = QColor(90, 65, 55)
 
-        # Body (tall, thin, angular — suit jacket)
         body = QPainterPath()
-        body.moveTo(cx - 16*s, cy + 50*s)       # bottom-left
-        body.lineTo(cx - 14*s, cy + 10*s)        # hip left
-        body.lineTo(cx - 16*s, cy - 10*s)        # chest left (broad)
-        body.lineTo(cx - 18*s, cy - 28*s)        # shoulder left (wide)
-        body.lineTo(cx + 18*s, cy - 28*s)        # shoulder right
-        body.lineTo(cx + 16*s, cy - 10*s)        # chest right
-        body.lineTo(cx + 14*s, cy + 10*s)        # hip right
-        body.lineTo(cx + 16*s, cy + 50*s)        # bottom-right
+        body.moveTo(cx - 16*s, cy + 50*s)
+        body.lineTo(cx - 14*s, cy + 10*s)
+        body.lineTo(cx - 16*s, cy - 10*s)
+        body.lineTo(cx - 18*s, cy - 28*s)
+        body.lineTo(cx + 18*s, cy - 28*s)
+        body.lineTo(cx + 16*s, cy - 10*s)
+        body.lineTo(cx + 14*s, cy + 10*s)
+        body.lineTo(cx + 16*s, cy + 50*s)
         body.closeSubpath()
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(suit_color))
         painter.drawPath(body)
 
-        # Suit lapels (V-shape)
         painter.setPen(QPen(QColor(55, 50, 60), 1.5*s))
         painter.drawLine(QPointF(cx, cy - 10*s), QPointF(cx - 8*s, cy - 25*s))
         painter.drawLine(QPointF(cx, cy - 10*s), QPointF(cx + 8*s, cy - 25*s))
 
-        # Head (narrow, gaunt)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(skin_color))
         painter.drawEllipse(QPointF(cx, cy - 38*s), 9*s, 12*s)
 
-        # Stovepipe hat (very tall!)
         hat_bottom = cy - 48*s
         hat_top = cy - 78*s
-        hat_width = 12*s
-        brim_width = 16*s
-
-        # Hat body (tall rectangle)
+        hw, bw = 12*s, 16*s
         painter.setBrush(QBrush(QColor(30, 25, 35)))
-        painter.drawRect(QRectF(cx - hat_width, hat_top,
-                               hat_width * 2, hat_bottom - hat_top))
-        # Hat brim
-        painter.drawRect(QRectF(cx - brim_width, hat_bottom - 2*s,
-                               brim_width * 2, 4*s))
-        # Hat band
+        painter.drawRect(QRectF(cx - hw, hat_top, hw * 2, hat_bottom - hat_top))
+        painter.drawRect(QRectF(cx - bw, hat_bottom - 2*s, bw * 2, 4*s))
         painter.setPen(QPen(QColor(100, 80, 60), 2*s))
-        painter.drawLine(QPointF(cx - hat_width, hat_bottom - 6*s),
-                        QPointF(cx + hat_width, hat_bottom - 6*s))
+        painter.drawLine(QPointF(cx - hw, hat_bottom - 6*s),
+                        QPointF(cx + hw, hat_bottom - 6*s))
 
-        # Bow tie
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(QColor(60, 50, 65)))
         bow_y = cy - 26*s
-        # Left wing
-        bow_l = QPainterPath()
-        bow_l.moveTo(cx, bow_y)
-        bow_l.lineTo(cx - 7*s, bow_y - 3*s)
-        bow_l.lineTo(cx - 7*s, bow_y + 3*s)
-        bow_l.closeSubpath()
-        painter.drawPath(bow_l)
-        # Right wing
-        bow_r = QPainterPath()
-        bow_r.moveTo(cx, bow_y)
-        bow_r.lineTo(cx + 7*s, bow_y - 3*s)
-        bow_r.lineTo(cx + 7*s, bow_y + 3*s)
-        bow_r.closeSubpath()
-        painter.drawPath(bow_r)
-        # Knot
+        for sign in (-1, 1):
+            tri = QPainterPath()
+            tri.moveTo(cx, bow_y)
+            tri.lineTo(cx + sign*7*s, bow_y - 3*s)
+            tri.lineTo(cx + sign*7*s, bow_y + 3*s)
+            tri.closeSubpath()
+            painter.drawPath(tri)
         painter.drawEllipse(QPointF(cx, bow_y), 2*s, 2*s)
 
-        # Beard (chin strap, no mustache)
         beard = QPainterPath()
         beard.moveTo(cx - 7*s, cy - 32*s)
         beard.quadTo(cx - 9*s, cy - 24*s, cx, cy - 22*s)
@@ -817,115 +936,116 @@ class FirstPersonCanvas(QWidget):
         painter.setBrush(QBrush(QColor(50, 40, 35)))
         painter.drawPath(beard)
 
-        # Eyes (steel blue — steady presidential gaze)
-        eye_color = QColor(120, 160, 200)
         eye_y = cy - 39*s
-        painter.setBrush(QBrush(eye_color))
+        painter.setBrush(QBrush(QColor(120, 160, 200)))
         painter.drawEllipse(QPointF(cx - 4*s, eye_y), 2*s, 2*s)
         painter.drawEllipse(QPointF(cx + 4*s, eye_y), 2*s, 2*s)
 
-    # -- Cleopatra: nemes headdress, scepter, regal --
+    # -- Walt Disney: warm suit, thin mustache, Mickey ears silhouette --
 
-    def _draw_cleopatra(self, painter: QPainter, cx, cy, scale):
-        """Cleopatra — Egyptian queen with headdress and scepter."""
+    def _draw_disney(self, painter: QPainter, cx, cy, scale):
         s = scale
-        dress_color = QColor(100, 70, 45)
-        skin_color = QColor(110, 75, 55)
-        gold = QColor(200, 170, 50)
+        suit = QColor(60, 50, 45)
+        skin = QColor(110, 85, 70)
 
-        # Dress (wider at hips, regal flowing gown)
-        dress = QPainterPath()
-        dress.moveTo(cx - 25*s, cy + 50*s)       # bottom-left
-        dress.lineTo(cx - 12*s, cy + 5*s)         # hip left
-        dress.lineTo(cx - 10*s, cy - 15*s)        # waist left
-        dress.lineTo(cx - 12*s, cy - 25*s)        # shoulder left
-        dress.lineTo(cx + 12*s, cy - 25*s)        # shoulder right
-        dress.lineTo(cx + 10*s, cy - 15*s)        # waist right
-        dress.lineTo(cx + 12*s, cy + 5*s)         # hip right
-        dress.lineTo(cx + 25*s, cy + 50*s)        # bottom-right
-        dress.closeSubpath()
+        body = QPainterPath()
+        body.moveTo(cx - 17*s, cy + 50*s)
+        body.lineTo(cx - 14*s, cy + 5*s)
+        body.lineTo(cx - 15*s, cy - 25*s)
+        body.lineTo(cx + 15*s, cy - 25*s)
+        body.lineTo(cx + 14*s, cy + 5*s)
+        body.lineTo(cx + 17*s, cy + 50*s)
+        body.closeSubpath()
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(dress_color))
-        painter.drawPath(dress)
+        painter.setBrush(QBrush(suit))
+        painter.drawPath(body)
 
-        # Gold belt/sash at waist
-        painter.setPen(QPen(gold, 2*s))
-        painter.drawLine(QPointF(cx - 11*s, cy - 12*s),
-                        QPointF(cx + 11*s, cy - 12*s))
-
-        # Gold collar / necklace
-        collar = QPainterPath()
-        collar.moveTo(cx - 12*s, cy - 25*s)
-        collar.quadTo(cx, cy - 18*s, cx + 12*s, cy - 25*s)
-        painter.setPen(QPen(gold, 2.5*s))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(collar)
-
-        # Head
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(skin_color))
+        painter.setBrush(QBrush(skin))
         painter.drawEllipse(QPointF(cx, cy - 36*s), 10*s, 12*s)
 
-        # Nemes headdress (Egyptian striped cloth)
-        nemes = QPainterPath()
-        nemes.moveTo(cx - 14*s, cy - 25*s)       # left shoulder drape
-        nemes.lineTo(cx - 12*s, cy - 44*s)        # left temple
-        nemes.quadTo(cx, cy - 55*s, cx + 12*s, cy - 44*s)  # top arc
-        nemes.lineTo(cx + 14*s, cy - 25*s)        # right shoulder drape
-        nemes.closeSubpath()
-        painter.setBrush(QBrush(QColor(50, 60, 100)))
-        painter.drawPath(nemes)
+        hair = QPainterPath()
+        hair.moveTo(cx - 10*s, cy - 40*s)
+        hair.quadTo(cx - 11*s, cy - 52*s, cx, cy - 50*s)
+        hair.quadTo(cx + 11*s, cy - 52*s, cx + 10*s, cy - 40*s)
+        hair.closeSubpath()
+        painter.setBrush(QBrush(QColor(50, 40, 35)))
+        painter.drawPath(hair)
 
-        # Headdress stripes (gold bands)
-        painter.setPen(QPen(gold, 1.5*s))
-        for i in range(4):
-            t = (i + 1) / 5.0
-            y = cy - 25*s + t * (-25*s)
-            x_offset = 12*s * (1 - t * 0.6)
-            painter.drawLine(QPointF(cx - x_offset, y),
-                           QPointF(cx + x_offset, y))
+        painter.setPen(QPen(QColor(50, 40, 35), 1.5*s))
+        painter.drawLine(QPointF(cx - 5*s, cy - 30*s), QPointF(cx - 2*s, cy - 29*s))
+        painter.drawLine(QPointF(cx + 2*s, cy - 29*s), QPointF(cx + 5*s, cy - 30*s))
 
-        # Uraeus (cobra) at forehead
-        cobra = QPainterPath()
-        cobra.moveTo(cx, cy - 50*s)
-        cobra.quadTo(cx - 3*s, cy - 58*s, cx, cy - 62*s)
-        cobra.quadTo(cx + 3*s, cy - 58*s, cx, cy - 50*s)
+        painter.setPen(QPen(suit, 3*s))
+        painter.drawLine(QPointF(cx + 15*s, cy - 18*s), QPointF(cx + 25*s, cy + 10*s))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(gold))
-        painter.drawPath(cobra)
-        # Cobra eye
-        painter.setBrush(QBrush(QColor(200, 50, 50)))
-        painter.drawEllipse(QPointF(cx, cy - 57*s), 1.5*s, 1.5*s)
+        painter.setBrush(QBrush(QColor(20, 18, 22)))
+        painter.drawEllipse(QPointF(cx + 20*s, cy - 55*s), 6*s, 6*s)
+        painter.drawEllipse(QPointF(cx + 30*s, cy - 55*s), 6*s, 6*s)
+        painter.drawEllipse(QPointF(cx + 25*s, cy - 48*s), 5*s, 5*s)
 
-        # Left hand holding scepter
-        painter.setPen(QPen(dress_color, 3*s))
-        painter.drawLine(QPointF(cx - 12*s, cy - 20*s),
-                        QPointF(cx - 22*s, cy + 10*s))
-        # Scepter (was/djed style)
-        painter.setPen(QPen(gold, 2.5*s))
-        painter.drawLine(QPointF(cx - 24*s, cy + 15*s),
-                        QPointF(cx - 20*s, cy - 25*s))
-        # Scepter head (ankh-like)
-        painter.setBrush(QBrush(gold))
-        painter.drawEllipse(QPointF(cx - 20*s, cy - 28*s), 4*s, 4*s)
-
-        # Eyes (emerald green — Cleopatra's legendary gaze)
-        eye_color = QColor(80, 200, 100)
         eye_y = cy - 37*s
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(eye_color))
-        painter.drawEllipse(QPointF(cx - 5*s, eye_y), 2.5*s, 2*s)
-        painter.drawEllipse(QPointF(cx + 5*s, eye_y), 2.5*s, 2*s)
+        painter.setBrush(QBrush(QColor(100, 130, 180)))
+        painter.drawEllipse(QPointF(cx - 4*s, eye_y), 2.5*s, 2*s)
+        painter.drawEllipse(QPointF(cx + 4*s, eye_y), 2.5*s, 2*s)
 
-        # Kohl eyeliner (classic Egyptian)
-        painter.setPen(QPen(QColor(20, 15, 15), 1.2*s))
-        painter.drawLine(QPointF(cx - 8*s, eye_y), QPointF(cx - 2*s, eye_y))
-        painter.drawLine(QPointF(cx + 2*s, eye_y), QPointF(cx + 8*s, eye_y))
+    # -- Taylor Swift: sparkly dress, flowing hair, microphone --
+
+    def _draw_swift(self, painter: QPainter, cx, cy, scale):
+        s = scale
+        dress = QColor(90, 50, 110)
+        skin = QColor(115, 90, 75)
+
+        gown = QPainterPath()
+        gown.moveTo(cx - 25*s, cy + 50*s)
+        gown.lineTo(cx - 10*s, cy + 5*s)
+        gown.lineTo(cx - 10*s, cy - 15*s)
+        gown.lineTo(cx - 12*s, cy - 25*s)
+        gown.lineTo(cx + 12*s, cy - 25*s)
+        gown.lineTo(cx + 10*s, cy - 15*s)
+        gown.lineTo(cx + 10*s, cy + 5*s)
+        gown.lineTo(cx + 25*s, cy + 50*s)
+        gown.closeSubpath()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(dress))
+        painter.drawPath(gown)
+
+        painter.setPen(QPen(QColor(200, 170, 230, 120), 1*s))
+        for i in range(6):
+            sparkle_y = cy - 10*s + i * 10*s
+            painter.drawEllipse(QPointF(cx - 5*s + (i % 3)*5*s, sparkle_y), 1.5*s, 1.5*s)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(skin))
+        painter.drawEllipse(QPointF(cx, cy - 36*s), 10*s, 12*s)
+
+        hair = QPainterPath()
+        hair.moveTo(cx - 12*s, cy - 20*s)
+        hair.quadTo(cx - 14*s, cy - 50*s, cx, cy - 52*s)
+        hair.quadTo(cx + 14*s, cy - 50*s, cx + 12*s, cy - 20*s)
+        hair.closeSubpath()
+        painter.setBrush(QBrush(QColor(160, 120, 60)))
+        painter.drawPath(hair)
+
+        painter.setPen(QPen(dress, 3*s))
+        painter.drawLine(QPointF(cx + 12*s, cy - 18*s), QPointF(cx + 24*s, cy - 8*s))
+        painter.setPen(QPen(QColor(80, 80, 80), 2*s))
+        painter.drawLine(QPointF(cx + 24*s, cy - 8*s), QPointF(cx + 24*s, cy - 22*s))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(80, 80, 80)))
+        painter.drawEllipse(QPointF(cx + 24*s, cy - 24*s), 4*s, 3*s)
+
+        eye_y = cy - 37*s
+        painter.setBrush(QBrush(QColor(100, 160, 200)))
+        painter.drawEllipse(QPointF(cx - 4*s, eye_y), 2.5*s, 2*s)
+        painter.drawEllipse(QPointF(cx + 4*s, eye_y), 2.5*s, 2*s)
+
+        painter.setPen(QPen(QColor(180, 50, 50), 1.5*s))
+        painter.drawLine(QPointF(cx - 3*s, cy - 28*s), QPointF(cx + 3*s, cy - 28*s))
 
     # -- Fallback generic silhouette --
 
     def _draw_generic_figure(self, painter: QPainter, cx, cy, scale):
-        """Generic humanoid for unknown figures."""
         s = scale
         body = QPainterPath()
         bw, bh = 20*s, 50*s
@@ -945,26 +1065,37 @@ class FirstPersonCanvas(QWidget):
         painter.drawEllipse(QPointF(cx - 6*s, eye_y), 3*s, 2*s)
         painter.drawEllipse(QPointF(cx + 6*s, eye_y), 3*s, 2*s)
 
+    # -- Wax cracking particles --
+
+    def _draw_wax_particles(self, painter: QPainter, cx, cy, scale):
+        s = scale
+        t = self._figure_anim_frame / 30.0
+        painter.setPen(Qt.PenStyle.NoPen)
+        for i in range(8):
+            angle = (i / 8.0) * math.pi * 2 + t * 3
+            dist = 20 * s + t * 40 * s
+            px = cx + math.cos(angle) * dist
+            py = cy + math.sin(angle) * dist - t * 30 * s
+            alpha = int(200 * (1 - t))
+            painter.setBrush(QBrush(QColor(180, 160, 120, max(0, alpha))))
+            painter.drawEllipse(QPointF(px, py), 2*s, 1.5*s)
+
     def _draw_room_label(self, painter: QPainter, w: int, h: int,
                           text: str, color: QColor):
-        """Draw a label at the top of the view."""
         painter.setPen(color)
         painter.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
         painter.drawText(QRectF(0, h * 0.88, w, 30),
                         Qt.AlignmentFlag.AlignCenter, text)
 
     def _draw_compass(self, painter: QPainter, w: int, h: int):
-        """Draw a small compass showing facing direction."""
         cx = w - 40
         cy = 35
         r = 18
 
-        # Background circle
         painter.setPen(QPen(FPTheme.WALL_TRIM, 1))
         painter.setBrush(QBrush(QColor(20, 15, 30, 200)))
         painter.drawEllipse(QPointF(cx, cy), r, r)
 
-        # Direction labels
         painter.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
         dirs = {"N": (cx, cy - r + 10), "S": (cx, cy + r - 4),
                 "E": (cx + r - 8, cy + 3), "W": (cx - r + 3, cy + 3)}
@@ -979,7 +1110,6 @@ class FirstPersonCanvas(QWidget):
             painter.setPen(color)
             painter.drawText(int(x), int(y), label)
 
-        # Direction arrow
         painter.setPen(QPen(FPTheme.TEXT_GOLD, 2))
         arrow_map = {
             Direction.NORTH: (cx, cy - r + 14, cx, cy + 4),
@@ -991,23 +1121,23 @@ class FirstPersonCanvas(QWidget):
         painter.drawLine(QPointF(ax2, ay2), QPointF(ax1, ay1))
 
     def _draw_minimap(self, painter: QPainter, w: int, h: int):
-        """Draw a tiny 5×5 minimap in the bottom-left corner."""
+        """Enhanced minimap with larger cells, glow border, locked-door dots."""
         if not self._fog_map:
             return
 
         rows = len(self._fog_map)
         cols = len(self._fog_map[0]) if rows else 0
-        cell_size = 8
+        cell_size = 11
         margin = 12
         map_w = cols * cell_size
         map_h = rows * cell_size
 
-        # Background
         mx = margin
         my = h - margin - map_h
+
         painter.setPen(QPen(FPTheme.WALL_TRIM, 1))
-        painter.setBrush(QBrush(QColor(20, 15, 30, 180)))
-        painter.drawRect(QRectF(mx - 2, my - 2, map_w + 4, map_h + 4))
+        painter.setBrush(QBrush(QColor(20, 15, 30, 200)))
+        painter.drawRect(QRectF(mx - 3, my - 3, map_w + 6, map_h + 6))
 
         for r in range(rows):
             for c in range(cols):
@@ -1027,3 +1157,27 @@ class FirstPersonCanvas(QWidget):
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(color))
                 painter.drawRect(QRectF(x, y, cell_size - 1, cell_size - 1))
+
+                # Glow border on current room
+                if cell.visibility == RoomVisibility.CURRENT:
+                    glow = QRadialGradient(
+                        x + cell_size / 2, y + cell_size / 2, cell_size
+                    )
+                    glow.setColorAt(0, QColor(255, 210, 80, 60))
+                    glow.setColorAt(1, QColor(255, 210, 80, 0))
+                    painter.setBrush(QBrush(glow))
+                    painter.drawRect(QRectF(x - 2, y - 2, cell_size + 3, cell_size + 3))
+
+                # Locked doors as gold dots between cells
+                if cell.doors and cell.visibility != RoomVisibility.HIDDEN:
+                    from maze import Direction as D, DoorState as DS
+                    if D.EAST in cell.doors and cell.doors[D.EAST] == DS.LOCKED:
+                        painter.setBrush(QBrush(QColor(200, 170, 50)))
+                        painter.drawEllipse(
+                            QPointF(x + cell_size, y + cell_size / 2), 2, 2
+                        )
+                    if D.SOUTH in cell.doors and cell.doors[D.SOUTH] == DS.LOCKED:
+                        painter.setBrush(QBrush(QColor(200, 170, 50)))
+                        painter.drawEllipse(
+                            QPointF(x + cell_size / 2, y + cell_size), 2, 2
+                        )

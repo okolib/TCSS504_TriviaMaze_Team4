@@ -4,30 +4,31 @@ PySide6 GUI implementation of ViewProtocol (interfaces.md §3.4).
 Replaces the CLI View with a full graphical interface:
   - Maze canvas with fog-of-war
   - Sidebar with curse meter, room info, and navigation buttons
-  - Trivia confrontation dialog
+  - Trivia confrontation dialog with typewriter effect
   - Game log panel
+  - Arrow-key movement
+  - Audio mute toggle
+  - End-of-game scoreboard
 
 Imports maze types only — never imports db.
 """
 
-import sys
-import textwrap
+from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTextEdit, QDialog, QDialogButtonBox,
-    QGridLayout, QProgressBar, QGroupBox, QMessageBox, QMenuBar,
-    QSplitter, QFrame, QSizePolicy, QStackedWidget,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QTextEdit, QDialog,
+    QGridLayout, QProgressBar, QGroupBox, QMessageBox,
+    QFrame, QSizePolicy, QStackedWidget,
 )
-from PySide6.QtCore import Qt, Signal, Slot, QSize, QTimer
-from PySide6.QtGui import QFont, QColor, QPalette, QAction, QIcon
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QFont, QAction, QKeyEvent, QPixmap
 
 from maze import (
     Direction, DoorState, GameStatus,
     Position, Room, GameState,
 )
 
-# Try importing from maze, fall back to stubs
 try:
     from maze import RoomVisibility, FogMapCell
 except ImportError:
@@ -35,6 +36,7 @@ except ImportError:
 
 from maze_canvas import MazeCanvas
 from first_person_canvas import FirstPersonCanvas
+from audio import AudioManager
 
 
 # ======================================================================
@@ -134,24 +136,32 @@ CURSE_COLORS = {
 # Trivia Dialog
 # ======================================================================
 
-class TriviaDialog(QDialog):
-    """Modal dialog for wax figure confrontations."""
+_PORTRAIT_DIR = Path(__file__).parent / "assets" / "portraits"
+_PORTRAIT_MAP = {
+    "Leonardo DiCaprio": "dicaprio_wax.png",
+    "Michael Jackson": "jackson_wax.png",
+    "Abraham Lincoln": "lincoln_wax.png",
+    "Walt Disney": "disney_wax.png",
+    "Taylor Swift": "swift_wax.png",
+}
 
-    answer_selected = Signal(str)  # Emits "A", "B", or "C"
+
+class TriviaDialog(QDialog):
+    """Modal dialog for wax figure confrontations with typewriter effect."""
+
+    answer_selected = Signal(str)
 
     def __init__(self, question_dict: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🗿 Wax Figure Confrontation")
-        self.setMinimumWidth(500)
+        self.setWindowTitle("Wax Figure Confrontation")
+        self.setMinimumWidth(580)
         self.setStyleSheet("""
             QDialog {
                 background-color: #1a1228;
                 border: 2px solid #e6b832;
                 border-radius: 8px;
             }
-            QLabel {
-                color: #dcd2f0;
-            }
+            QLabel { color: #dcd2f0; }
             QPushButton {
                 background-color: #2d233c;
                 border: 1px solid #5a3d8a;
@@ -176,59 +186,86 @@ class TriviaDialog(QDialog):
         question = question_dict.get("question_text", "")
         choices = question_dict.get("choices", {})
 
-        # Header
-        header = QLabel("A wax figure stirs...")
-        header.setFont(QFont("Courier New", 11))
-        header.setStyleSheet("color: #88c8e8;")
-        layout.addWidget(header)
+        # Portrait image
+        portrait_file = _PORTRAIT_MAP.get(figure)
+        if portrait_file:
+            portrait_path = _PORTRAIT_DIR / portrait_file
+            if portrait_path.exists():
+                pix = QPixmap(str(portrait_path))
+                img_label = QLabel()
+                img_label.setPixmap(
+                    pix.scaledToWidth(540, Qt.TransformationMode.SmoothTransformation)
+                )
+                img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                img_label.setStyleSheet(
+                    "border: 2px solid #e6b832; border-radius: 6px;"
+                )
+                layout.addWidget(img_label)
 
-        # Figure name
         name_label = QLabel(f"The eyes of {figure.upper()} snap open.")
         name_label.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
         name_label.setStyleSheet("color: #e6b832;")
         name_label.setWordWrap(True)
         layout.addWidget(name_label)
 
-        # Flavor text
         desc = QLabel("Wax cracks along the jaw as it confronts you:")
         desc.setFont(QFont("Courier New", 10))
         desc.setStyleSheet("color: #786890;")
         layout.addWidget(desc)
 
-        # Question
-        q_label = QLabel(f'"{question}"')
-        q_label.setFont(QFont("Courier New", 12))
-        q_label.setStyleSheet("color: #88c8e8;")
-        q_label.setWordWrap(True)
-        layout.addWidget(q_label)
+        # Question with typewriter effect
+        self._q_label = QLabel("")
+        self._q_label.setFont(QFont("Courier New", 12))
+        self._q_label.setStyleSheet("color: #88c8e8;")
+        self._q_label.setWordWrap(True)
+        self._q_label.setMinimumHeight(50)
+        layout.addWidget(self._q_label)
 
-        # Separator
+        self._full_question = f'"{question}"'
+        self._typed_chars = 0
+        self._type_timer = QTimer(self)
+        self._type_timer.setInterval(30)
+        self._type_timer.timeout.connect(self._type_next_char)
+
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setStyleSheet("color: #3d2f52;")
         layout.addWidget(line)
 
-        # Answer buttons
+        self._answer_buttons: list[QPushButton] = []
         btn_layout = QVBoxLayout()
         btn_layout.setSpacing(8)
 
         if isinstance(choices, dict):
             for key, text in choices.items():
                 btn = QPushButton(f"  {key})  {text}")
+                btn.setEnabled(False)
                 btn.clicked.connect(lambda checked, k=key: self._select(k))
                 btn_layout.addWidget(btn)
+                self._answer_buttons.append(btn)
         elif isinstance(choices, list):
             for i, choice in enumerate(choices):
                 key = choice.get("key", chr(65 + i))
                 text = choice.get("text", str(choice))
                 btn = QPushButton(f"  {key})  {text}")
+                btn.setEnabled(False)
                 btn.clicked.connect(lambda checked, k=key: self._select(k))
                 btn_layout.addWidget(btn)
+                self._answer_buttons.append(btn)
 
         layout.addLayout(btn_layout)
 
+        self._type_timer.start()
+
+    def _type_next_char(self):
+        self._typed_chars += 1
+        self._q_label.setText(self._full_question[:self._typed_chars])
+        if self._typed_chars >= len(self._full_question):
+            self._type_timer.stop()
+            for btn in self._answer_buttons:
+                btn.setEnabled(True)
+
     def _select(self, key: str):
-        """Handle answer button click."""
         self.answer_selected.emit(key.upper())
         self.accept()
 
@@ -247,30 +284,121 @@ class QtView(QMainWindow):
     # Signals for communicating back to Engine
     command_issued = Signal(str)  # "move north", "answer A", "save", etc.
 
+    play_again_requested = Signal()
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🕯 Waxworks: The Midnight Curse")
+        self.setWindowTitle("Waxworks: The Midnight Curse")
         self.setMinimumSize(1100, 700)
         self.setStyleSheet(WINDOW_STYLE)
 
-        self._pending_input_callback = None  # For get_input() async bridge
-        self._current_question = None        # Currently displayed question dict
-        self._in_confrontation = False       # Prevents dialog reentrancy
-        self._view_mode = "first_person"     # "top_down" or "first_person"
-        self._player_facing = Direction.SOUTH  # Track last move direction
+        self._pending_input_callback = None
+        self._current_question = None
+        self._in_confrontation = False
+        self._view_mode = "first_person"
+        self._player_facing = Direction.SOUTH
+        self._audio = AudioManager()
+        self._force_close = False
+        self._game_started = False
         self._setup_ui()
         self._setup_menu()
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     # ------------------------------------------------------------------
     # UI Setup
     # ------------------------------------------------------------------
 
     def _setup_ui(self):
-        """Build the main window layout."""
-        central = QWidget()
-        self.setCentralWidget(central)
+        """Build the main window layout with a title screen and game screen."""
+        self._root_stack = QStackedWidget()
+        self.setCentralWidget(self._root_stack)
 
-        main_layout = QHBoxLayout(central)
+        # --- Page 0: Title / Start Screen ---
+        self._title_page = QWidget()
+        self._title_page.setStyleSheet("background-color: #0a0612;")
+        tp_layout = QVBoxLayout(self._title_page)
+        tp_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        tp_layout.addStretch(2)
+
+        glow_title = QLabel("WAXWORKS")
+        glow_title.setFont(QFont("Courier New", 52, QFont.Weight.Bold))
+        glow_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        glow_title.setStyleSheet(
+            "color: #e6b832;"
+            "background: transparent;"
+        )
+        tp_layout.addWidget(glow_title)
+
+        subtitle = QLabel("THE MIDNIGHT CURSE")
+        subtitle.setFont(QFont("Courier New", 20, QFont.Weight.Bold))
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet("color: #8a6cc0; background: transparent;")
+        tp_layout.addWidget(subtitle)
+
+        tp_layout.addSpacing(12)
+
+        tagline = QLabel("Escape the cursed museum before you become\nthe newest exhibit — forever.")
+        tagline.setFont(QFont("Courier New", 12))
+        tagline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tagline.setStyleSheet("color: #786890; background: transparent;")
+        tagline.setWordWrap(True)
+        tp_layout.addWidget(tagline)
+
+        tp_layout.addSpacing(40)
+
+        _TITLE_BTN_STYLE = """
+            QPushButton {
+                background-color: #2d233c;
+                border: 2px solid #e6b832;
+                border-radius: 10px;
+                color: #e6b832;
+            }
+            QPushButton:hover {
+                background-color: #3d2f52;
+                border-color: #ffd84a;
+                color: #ffd84a;
+            }
+            QPushButton:pressed {
+                background-color: #553d7a;
+            }
+        """
+
+        self._btn_start = QPushButton("▶  START GAME")
+        self._btn_start.setFont(QFont("Courier New", 18, QFont.Weight.Bold))
+        self._btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_start.setFixedSize(320, 64)
+        self._btn_start.setStyleSheet(_TITLE_BTN_STYLE)
+        self._btn_start.clicked.connect(self._on_start_clicked)
+
+        self._btn_music_toggle = QPushButton("♫ Music: ON")
+        self._btn_music_toggle.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
+        self._btn_music_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_music_toggle.setFixedSize(180, 48)
+        self._btn_music_toggle.setStyleSheet(_TITLE_BTN_STYLE)
+        self._btn_music_toggle.clicked.connect(self._toggle_title_music)
+
+        btn_row = QHBoxLayout()
+        btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_row.setSpacing(16)
+        btn_row.addWidget(self._btn_start)
+        btn_row.addWidget(self._btn_music_toggle)
+        tp_layout.addLayout(btn_row)
+
+        tp_layout.addStretch(3)
+
+        footer = QLabel("TCSS 504 — Team 4")
+        footer.setFont(QFont("Courier New", 9))
+        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        footer.setStyleSheet("color: #3d2f52; background: transparent;")
+        tp_layout.addWidget(footer)
+        tp_layout.addSpacing(16)
+
+        self._root_stack.addWidget(self._title_page)  # index 0
+
+        # --- Page 1: Game Screen ---
+        self._game_page = QWidget()
+        main_layout = QHBoxLayout(self._game_page)
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(12)
 
@@ -374,19 +502,16 @@ class QtView(QMainWindow):
         sidebar.addWidget(nav_group)
 
         # Action buttons
-        action_group = QGroupBox("⚡ Actions")
+        action_group = QGroupBox("Actions")
         action_layout = QHBoxLayout(action_group)
-        self._btn_save = QPushButton("💾 Save")
-        self._btn_load = QPushButton("📂 Load")
-        self._btn_map = QPushButton("🗺 Map")
+        self._btn_load = QPushButton("Load")
+        self._btn_mute = QPushButton("Mute")
 
-        self._btn_save.clicked.connect(lambda: self._issue_command("save"))
         self._btn_load.clicked.connect(lambda: self._issue_command("load"))
-        self._btn_map.clicked.connect(lambda: self._issue_command("map"))
+        self._btn_mute.clicked.connect(self._toggle_mute)
 
-        action_layout.addWidget(self._btn_save)
         action_layout.addWidget(self._btn_load)
-        action_layout.addWidget(self._btn_map)
+        action_layout.addWidget(self._btn_mute)
         sidebar.addWidget(action_group)
 
         # Game log
@@ -402,20 +527,28 @@ class QtView(QMainWindow):
         sidebar.addStretch()
         main_layout.addLayout(sidebar, stretch=1)
 
+        self._root_stack.addWidget(self._game_page)  # index 1
+        self._root_stack.setCurrentIndex(0)  # show title screen first
+
+    def _on_start_clicked(self):
+        """Transition from the title screen to the game."""
+        if self._game_started:
+            return
+        self._game_started = True
+        self._root_stack.setCurrentIndex(1)
+        self._audio.start_music()
+        self.command_issued.emit("__start__")
+
+    def _toggle_title_music(self):
+        """Toggle music on/off from the title screen."""
+        muted = self._audio.toggle_mute()
+        self._btn_music_toggle.setText("♫ Music: OFF" if muted else "♫ Music: ON")
+        self._btn_mute.setText("Unmute" if muted else "Mute")
+
     def _setup_menu(self):
         """Build the menu bar."""
         menu_bar = self.menuBar()
-
         game_menu = menu_bar.addMenu("&Game")
-
-        new_action = QAction("&New Game", self)
-        new_action.triggered.connect(lambda: self._issue_command("new"))
-        game_menu.addAction(new_action)
-
-        save_action = QAction("&Save", self)
-        save_action.setShortcut("Ctrl+S")
-        save_action.triggered.connect(lambda: self._issue_command("save"))
-        game_menu.addAction(save_action)
 
         load_action = QAction("&Load", self)
         load_action.setShortcut("Ctrl+L")
@@ -434,7 +567,7 @@ class QtView(QMainWindow):
     # ------------------------------------------------------------------
 
     def display_welcome(self) -> None:
-        """Show the themed welcome banner."""
+        """Show the themed welcome banner in the game log."""
         self._log(
             "<b style='color:#e6b832;'>═══════════════════════════════════════</b><br>"
             "<b style='color:#e6b832;'>  WAXWORKS: THE MIDNIGHT CURSE</b><br>"
@@ -470,17 +603,25 @@ class QtView(QMainWindow):
             zone = getattr(room.trivia, "zone", None)
 
         ZONE_TEXT = {
-            "Art Gallery": {
-                "entrance": "Paint-stained easels line the walls. A figure hunches over a canvas...",
-                "ambient": "The Mona Lisa's eyes seem to follow you.",
+            "Hollywood Wing": {
+                "entrance": "Movie posters line the walls. A man in a sharp suit leans against an Oscar...",
+                "ambient": "Spotlights sweep across faded film reels.",
             },
-            "American History": {
+            "Music Hall": {
+                "entrance": "A sequined glove glistens under a single spotlight. A figure strikes a pose...",
+                "ambient": "Faint echoes of a bass line drift through the hall.",
+            },
+            "History Gallery": {
                 "entrance": "A tall figure in a stovepipe hat stands behind a podium...",
                 "ambient": "A brass eagle gleams on the wall.",
             },
-            "Ancient History": {
-                "entrance": "Sand crunches under your feet. A queen sits on a gilded throne...",
-                "ambient": "The faint hiss of a serpent echoes from the shadows.",
+            "Animation Vault": {
+                "entrance": "Animated sketches float along the walls. A man holds a familiar mouse-eared silhouette...",
+                "ambient": "The faint sound of a music box plays 'When You Wish Upon a Star'.",
+            },
+            "Pop Culture Lounge": {
+                "entrance": "Glittering stage lights pulse. A figure clutches a microphone, hair flowing...",
+                "ambient": "Friendship bracelets crunch softly under your feet.",
             },
         }
 
@@ -531,7 +672,6 @@ class QtView(QMainWindow):
 
     def display_move_result(self, result: str, direction: str) -> None:
         """Display the result of a move attempt."""
-        # Track facing direction for first-person view
         dir_map = {
             "north": Direction.NORTH, "south": Direction.SOUTH,
             "east": Direction.EAST, "west": Direction.WEST,
@@ -540,6 +680,8 @@ class QtView(QMainWindow):
         }
         if direction.lower() in dir_map and result in ("moved", "staircase"):
             self._player_facing = dir_map[direction.lower()]
+            self._fp_canvas.start_walk_animation()
+            self._audio.play("move")
 
         if result == "moved":
             self._log(f"<span style='color:#64c882;'>You move {direction}.</span>")
@@ -555,8 +697,9 @@ class QtView(QMainWindow):
                     "<span style='color:#786890;'>Familiar hallways stretch before you.</span>"
                 )
         elif result == "locked":
+            self._audio.play("locked")
             self._log(
-                f"<span style='color:#e6b832;'>🔒 The gate to the {direction} is sealed. "
+                f"<span style='color:#e6b832;'>The gate to the {direction} is sealed. "
                 "A wax figure guards the way.</span>"
             )
         elif result == "wall":
@@ -569,7 +712,6 @@ class QtView(QMainWindow):
 
     def display_confrontation(self, question_dict: dict) -> None:
         """Display a wax figure confrontation with the trivia question."""
-        # Guard against reentrancy: if we're already showing a dialog, skip
         if self._in_confrontation:
             return
 
@@ -577,12 +719,14 @@ class QtView(QMainWindow):
         self._in_confrontation = True
         figure = question_dict.get("figure_name", "Unknown")
 
+        self._audio.play("confront")
+        self._fp_canvas.start_figure_animation()
+
         self._log(
-            f"<b style='color:#e65050;'>🗿 A wax figure stirs...</b><br>"
+            f"<b style='color:#e65050;'>A wax figure stirs...</b><br>"
             f"<b style='color:#e6b832;'>The eyes of {figure.upper()} snap open.</b>"
         )
 
-        # Show the trivia dialog (modal — blocks until answered)
         dialog = TriviaDialog(question_dict, parent=self)
         dialog.answer_selected.connect(self._on_trivia_answer)
         dialog.exec()
@@ -591,14 +735,16 @@ class QtView(QMainWindow):
     def display_answer_result(self, result: str, curse_level: int) -> None:
         """Display the result of answering a question."""
         if result == "correct":
+            self._audio.play("correct")
             self._log(
-                "<span style='color:#64c882;'>✓ The figure is defeated!</span><br>"
+                "<span style='color:#64c882;'>The figure is defeated!</span><br>"
                 "<span style='color:#64c882;'>The curse recedes. The gate grinds open.</span><br>"
                 "<span style='color:#786890;'>The figure nods slowly and returns to stillness.</span>"
             )
         elif result == "wrong":
+            self._audio.play("wrong")
             self._log(
-                "<span style='color:#e65050;'>✗ Wrong!</span><br>"
+                "<span style='color:#e65050;'>Wrong!</span><br>"
                 "<span style='color:#e6b832;'>The curse tightens its grip... "
                 "you feel your fingers stiffening.</span><br>"
                 "<span style='color:#786890;'>A grinding of stone. The gate stays sealed.</span>"
@@ -631,42 +777,42 @@ class QtView(QMainWindow):
             self._log("<span style='color:#e6b832;'>No saved game found.</span>")
 
     def display_endgame(self, status: GameStatus, curse_level: int,
-                        rooms_explored: int = 0, total_rooms: int = 25,
-                        figures_defeated: int = 0, total_figures: int = 3) -> None:
-        """Display victory or game-over sequence."""
+                        rooms_explored: int = 0, total_rooms: int = 64,
+                        figures_defeated: int = 0, total_figures: int = 5,
+                        score: dict = None) -> None:
+        """Display victory or game-over sequence with scoreboard."""
+        self._audio.stop_music()
         if status == GameStatus.WON:
-            self._show_endgame_dialog(
-                title="🌅 THE CURSE IS BROKEN",
-                message=(
-                    "The last gate opens...\n\n"
+            self._audio.play("won")
+        elif status == GameStatus.LOST:
+            self._audio.play("lost")
+
+        score = score or {}
+        if status == GameStatus.WON:
+            self._show_scoreboard_dialog(
+                title="THE CURSE IS BROKEN",
+                narrative=(
+                    "The last gate opens...\n"
                     "Warm orange light floods the hallway.\n"
                     "The wax on your skin cracks and falls away.\n"
-                    "Behind you, the figures slump — lifeless once more.\n\n"
-                    "Dawn breaks over the museum.\n"
-                    "You are free."
+                    "Dawn breaks over the museum. You are free."
                 ),
-                stats=f"Rooms: {rooms_explored}/{total_rooms}  |  "
-                      f"Figures: {figures_defeated}/{total_figures}  |  "
-                      f"Curse: {curse_level}",
-                color="#64c882",
+                rooms_explored=rooms_explored, total_rooms=total_rooms,
+                figures_defeated=figures_defeated, total_figures=total_figures,
+                curse_level=curse_level, score=score, color="#64c882",
             )
         elif status == GameStatus.LOST:
-            self._show_endgame_dialog(
-                title="💀 GAME OVER",
-                message=(
-                    "Your skin hardens...\n"
-                    "Your joints lock...\n"
-                    "Your eyes glaze over...\n\n"
-                    '"THE NEWEST EXHIBIT"\n\n'
-                    "Name:  Unknown Explorer\n"
-                    "Date:  The Midnight Hour\n"
-                    "Cause: Curiosity\n\n"
+            self._show_scoreboard_dialog(
+                title="GAME OVER",
+                narrative=(
+                    "Your skin hardens... your joints lock...\n"
+                    "Your eyes glaze over.\n\n"
+                    '"THE NEWEST EXHIBIT"\n'
                     "PERMANENT COLLECTION"
                 ),
-                stats=f"Rooms: {rooms_explored}/{total_rooms}  |  "
-                      f"Figures: {figures_defeated}/{total_figures}  |  "
-                      f"Curse: {curse_level}",
-                color="#e65050",
+                rooms_explored=rooms_explored, total_rooms=total_rooms,
+                figures_defeated=figures_defeated, total_figures=total_figures,
+                curse_level=curse_level, score=score, color="#e65050",
             )
 
     def display_error(self, message: str) -> None:
@@ -729,59 +875,209 @@ class QtView(QMainWindow):
             f"QProgressBar::chunk {{ background-color: {color}; border-radius: 3px; }}"
         )
 
-    def _show_endgame_dialog(self, title: str, message: str,
-                             stats: str, color: str) -> None:
-        """Show a styled endgame dialog."""
+    def _show_scoreboard_dialog(self, title: str, narrative: str,
+                                rooms_explored: int, total_rooms: int,
+                                figures_defeated: int, total_figures: int,
+                                curse_level: int, score: dict,
+                                color: str) -> None:
+        """Show a styled scoreboard dialog with Play Again button."""
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
-        dialog.setMinimumWidth(450)
+        dialog.setMinimumWidth(480)
         dialog.setStyleSheet(f"""
-            QDialog {{
-                background-color: #1a1228;
-                border: 2px solid {color};
-            }}
-            QLabel {{
-                color: #dcd2f0;
-            }}
+            QDialog {{ background-color: #1a1228; border: 2px solid {color}; }}
+            QLabel {{ color: #dcd2f0; }}
         """)
 
         layout = QVBoxLayout(dialog)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
         layout.setContentsMargins(24, 24, 24, 24)
 
-        title_label = QLabel(title)
-        title_label.setFont(QFont("Courier New", 16, QFont.Weight.Bold))
-        title_label.setStyleSheet(f"color: {color};")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_label)
+        t_lbl = QLabel(title)
+        t_lbl.setFont(QFont("Courier New", 16, QFont.Weight.Bold))
+        t_lbl.setStyleSheet(f"color: {color};")
+        t_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(t_lbl)
 
-        msg_label = QLabel(message)
-        msg_label.setFont(QFont("Courier New", 11))
-        msg_label.setWordWrap(True)
-        msg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(msg_label)
+        n_lbl = QLabel(narrative)
+        n_lbl.setFont(QFont("Courier New", 10))
+        n_lbl.setWordWrap(True)
+        n_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(n_lbl)
 
-        stats_label = QLabel(stats)
-        stats_label.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-        stats_label.setStyleSheet(f"color: {color};")
-        stats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(stats_label)
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("color: #3d2f52;")
+        layout.addWidget(line)
 
-        ok_btn = QPushButton("Close")
-        ok_btn.clicked.connect(dialog.accept)
-        ok_btn.setStyleSheet(f"""
+        # Scoreboard rows
+        sb_lbl = QLabel("SCOREBOARD")
+        sb_lbl.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
+        sb_lbl.setStyleSheet(f"color: {color};")
+        sb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(sb_lbl)
+
+        rows = [
+            (f"Figures Defeated  ({figures_defeated}/{total_figures})",
+             score.get("figure_pts", 0)),
+            (f"Rooms Explored    ({rooms_explored}/{total_rooms})",
+             score.get("explore_pts", 0)),
+            (f"Curse Resistance  ({100 - curse_level}%)",
+             score.get("curse_pts", 0)),
+            ("Victory Bonus", score.get("win_bonus", 0)),
+        ]
+
+        for label_text, pts in rows:
+            row_w = QWidget()
+            row_l = QHBoxLayout(row_w)
+            row_l.setContentsMargins(20, 2, 20, 2)
+            lbl = QLabel(label_text)
+            lbl.setFont(QFont("Courier New", 10))
+            pts_lbl = QLabel(f"+{pts}")
+            pts_lbl.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+            pts_lbl.setStyleSheet(f"color: {color};")
+            pts_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+            row_l.addWidget(lbl)
+            row_l.addWidget(pts_lbl)
+            layout.addWidget(row_w)
+
+        line2 = QFrame()
+        line2.setFrameShape(QFrame.Shape.HLine)
+        line2.setStyleSheet("color: #5a3d8a;")
+        layout.addWidget(line2)
+
+        total_w = QWidget()
+        total_l = QHBoxLayout(total_w)
+        total_l.setContentsMargins(20, 4, 20, 4)
+        total_label = QLabel("TOTAL SCORE")
+        total_label.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
+        total_pts = QLabel(str(score.get("total", 0)))
+        total_pts.setFont(QFont("Courier New", 14, QFont.Weight.Bold))
+        total_pts.setStyleSheet(f"color: {color};")
+        total_pts.setAlignment(Qt.AlignmentFlag.AlignRight)
+        total_l.addWidget(total_label)
+        total_l.addWidget(total_pts)
+        layout.addWidget(total_w)
+
+        btn_style = f"""
             QPushButton {{
-                background-color: #2d233c;
-                border: 1px solid {color};
-                border-radius: 4px;
-                padding: 10px 24px;
-                color: {color};
-                font-weight: bold;
+                background-color: #2d233c; border: 1px solid {color};
+                border-radius: 4px; padding: 10px 24px;
+                color: {color}; font-weight: bold;
             }}
-            QPushButton:hover {{
-                background-color: #3d2f52;
-            }}
-        """)
-        layout.addWidget(ok_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+            QPushButton:hover {{ background-color: #3d2f52; }}
+        """
+
+        btn_row = QHBoxLayout()
+        play_btn = QPushButton("Play Again")
+        play_btn.setStyleSheet(btn_style)
+        play_btn.clicked.connect(lambda: self._on_play_again(dialog))
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(btn_style)
+        close_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(play_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
 
         dialog.exec()
+
+    def _on_play_again(self, dialog: QDialog) -> None:
+        dialog.accept()
+        self.play_again_requested.emit()
+
+    # ------------------------------------------------------------------
+    # Keyboard input
+    # ------------------------------------------------------------------
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Handle arrow-key movement (only after game starts)."""
+        if not self._game_started:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+                self._on_start_clicked()
+            else:
+                super().keyPressEvent(event)
+            return
+
+        key_map = {
+            Qt.Key.Key_Up: "move north",
+            Qt.Key.Key_Down: "move south",
+            Qt.Key.Key_Left: "move west",
+            Qt.Key.Key_Right: "move east",
+            Qt.Key.Key_W: "move north",
+            Qt.Key.Key_S: "move south",
+            Qt.Key.Key_A: "move west",
+            Qt.Key.Key_D: "move east",
+        }
+        cmd = key_map.get(event.key())
+        if cmd:
+            self._issue_command(cmd)
+        else:
+            super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------
+    # Audio
+    # ------------------------------------------------------------------
+
+    def _toggle_mute(self) -> None:
+        muted = self._audio.toggle_mute()
+        self._btn_mute.setText("Unmute" if muted else "Mute")
+        self._btn_music_toggle.setText("♫ Music: OFF" if muted else "♫ Music: ON")
+
+    # ------------------------------------------------------------------
+    # Save-before-quit dialog
+    # ------------------------------------------------------------------
+
+    def ask_save_before_quit(self) -> str:
+        """Show a dialog asking whether to save before quitting.
+        Returns 'save', 'quit', or 'cancel'.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("Quit")
+        box.setText("Save your progress before quitting?")
+        box.setStyleSheet("""
+            QMessageBox { background-color: #1a1228; }
+            QLabel {
+                color: #e6b832;
+                font-family: 'Courier New';
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton {
+                background-color: #2d233c;
+                border: 1px solid #5a3d8a;
+                border-radius: 6px;
+                padding: 8px 20px;
+                color: #dcd2f0;
+                font-family: 'Courier New';
+                font-size: 13px;
+                font-weight: bold;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background-color: #3d2f52;
+                border-color: #e6b832;
+            }
+        """)
+        save_btn = box.addButton("Save & Quit", QMessageBox.ButtonRole.AcceptRole)
+        quit_btn = box.addButton("Quit", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == save_btn:
+            return "save"
+        elif clicked == quit_btn:
+            return "quit"
+        return "cancel"
+
+    def force_close(self) -> None:
+        """Close the window without triggering the save prompt."""
+        self._force_close = True
+        self.close()
+
+    def closeEvent(self, event) -> None:
+        """Intercept window close to offer save prompt."""
+        if self._force_close:
+            event.accept()
+            return
+        event.ignore()
+        self._issue_command("quit")

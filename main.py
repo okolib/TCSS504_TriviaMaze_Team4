@@ -9,8 +9,7 @@ Supports both CLI (blocking loop) and Qt (callback-driven) modes.
 import sys
 
 from maze import (
-    Direction, DoorState, GameStatus, Position,
-    TriviaQuestion, Room, GameState,
+    Direction, DoorState, GameStatus, Position, GameState, FIGURES,
 )
 
 
@@ -100,15 +99,20 @@ class Engine:
     # Save / Load
     # ------------------------------------------------------------------
 
-    def save_game(self):
+    def save_game(self, silent: bool = False):
         """Get state from maze -> convert to dict -> pass to repo.save()."""
         state = self._maze.get_game_state()
         data = self.game_state_to_dict(state)
+        data["maze_seed"] = self._maze.get_seed()
+        data["maze_rows"] = self._maze.rows
+        data["maze_cols"] = self._maze.cols
         try:
             self._repo.save(data, self._save_filepath)
-            self._view.display_save_result(True)
+            if not silent:
+                self._view.display_save_result(True)
         except Exception as e:
-            self._view.display_save_result(False, str(e))
+            if not silent:
+                self._view.display_save_result(False, str(e))
 
     def load_game(self) -> bool:
         """repo.load() -> convert dict to GameState -> maze.restore().
@@ -185,16 +189,48 @@ class Engine:
         status = self._maze.get_game_status()
         if status != GameStatus.PLAYING:
             state = self._maze.get_game_state()
+            total_rooms = self._maze.rows * self._maze.cols
+            total_figures = len(FIGURES)
+            figures_defeated = len(state.defeated_figures)
+            rooms_explored = len(state.visited_positions)
+
+            score = self.calculate_score(
+                figures_defeated=figures_defeated,
+                rooms_explored=rooms_explored,
+                curse_level=state.curse_level,
+                won=(status == GameStatus.WON),
+            )
+
+            self._repo.delete_save(self._save_filepath)
+
             self._view.display_endgame(
                 status=status,
-                curse_level=state.wax_meter,
-                rooms_explored=len(state.visited_positions),
-                total_rooms=25,
-                figures_defeated=len(state.answered_figures),
-                total_figures=3,
+                curse_level=state.curse_level,
+                rooms_explored=rooms_explored,
+                total_rooms=total_rooms,
+                figures_defeated=figures_defeated,
+                total_figures=total_figures,
+                score=score,
             )
             return True
         return False
+
+    @staticmethod
+    def calculate_score(figures_defeated: int, rooms_explored: int,
+                        curse_level: int, won: bool) -> dict:
+        """Calculate the end-of-game score breakdown."""
+        figure_pts = figures_defeated * 200
+        explore_pts = rooms_explored * 10
+        curse_pts = max(0, (100 - curse_level) * 2) if won else 0
+        win_bonus = 500 if won else 0
+        total = figure_pts + explore_pts + curse_pts + win_bonus
+        return {
+            "figure_pts": figure_pts,
+            "explore_pts": explore_pts,
+            "curse_pts": curse_pts,
+            "win_bonus": win_bonus,
+            "total": total,
+        }
 
     # ------------------------------------------------------------------
     # Command Dispatch (public — callable from CLI loop or Qt signals)
@@ -274,8 +310,17 @@ class Engine:
         self._view.display_fog_map(fog_map)
 
     def _handle_quit(self) -> None:
-        """Handle quit command."""
-        if hasattr(self._view, 'close'):
+        """Handle quit command — prompts to save if game is still in progress."""
+        if self._maze.get_game_status() == GameStatus.PLAYING:
+            if hasattr(self._view, 'ask_save_before_quit'):
+                answer = self._view.ask_save_before_quit()
+                if answer == "save":
+                    self.save_game()
+                elif answer == "cancel":
+                    return
+        if hasattr(self._view, 'force_close'):
+            self._view.force_close()
+        elif hasattr(self._view, 'close'):
             self._view.close()
         sys.exit(0)
 
@@ -310,80 +355,91 @@ class Engine:
         """Start the game in Qt mode.
 
         Wires the QtView's command_issued signal to handle_command(),
-        resets questions, displays welcome, and starts the Qt event loop.
+        displays welcome, and starts the Qt event loop.
 
         Parameters
         ----------
         app : QApplication
         """
-        self._repo.reset_questions()
+        self._view.command_issued.connect(self._handle_qt_command)
 
-        # Wire signal → callback
-        self._view.command_issued.connect(self.handle_command)
+        if hasattr(self._view, 'play_again_requested'):
+            self._view.play_again_requested.connect(
+                lambda: self._restart_game()
+            )
 
-        # Initial display
-        self._view.display_welcome()
-        self.refresh_display()
-
-        # Show the window and start Qt event loop
         self._view.show()
         app.exec()
 
+    def _handle_qt_command(self, cmd: str) -> None:
+        """Route Qt commands, handling the title-screen start trigger."""
+        if cmd == "__start__":
+            self._view.display_welcome()
+            self.refresh_display()
+            return
+        self.handle_command(cmd)
+
+    def _restart_game(self) -> None:
+        """Reset the maze and repo for a new game."""
+        from maze import Maze
+        new_maze = Maze()
+        self._maze = new_maze
+        self._repo.reset_questions()
+        self._repo.delete_save(self._save_filepath)
+        self._current_question = None
+        self._confronted_figure = None
+        self._view.display_welcome()
+        self.refresh_display()
+
 
 # ======================================================================
-# Entry point
+# CLI Entry point — run `python main.py` for the text-based game.
+# For the GUI version, run `python main_gui.py`.
 # ======================================================================
 
-if __name__ == "__main__":
+def _start_cli():
+    """Launch the CLI game loop with resume-or-new-game logic."""
+    from view import View
     from maze import Maze
     from db import Repository
 
-    maze = Maze()
     repo = Repository(db_path="waxworks.db")
+    view = View()
 
-    if "--gui" in sys.argv:
-        # ---- Qt GUI Mode ----
-        from PySide6.QtWidgets import QApplication
-        from qt_view import QtView
+    saved_data = repo.load("default")
+    resuming = False
 
-        app = QApplication(sys.argv)
-        view = QtView()
-        engine = Engine(maze, repo, view)
-
-        # Offer to load a saved game via dialog
-        from PySide6.QtWidgets import QMessageBox
-        reply = QMessageBox.question(
-            view, "Waxworks",
-            "Load a saved game?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            engine.load_game()
-        else:
-            repo.reset_questions()
-
-        engine.start_qt(app)
-
-    else:
-        # ---- CLI Mode (original behavior) ----
-        from view import View
-
-        view = View()
-        engine = Engine(maze, repo, view)
-
-        # Offer to load a saved game
+    if saved_data and saved_data.get("game_status") == "playing":
         try:
-            response = view.get_input("\n  Load saved game? (y/n) > ")
-            if response == "y":
-                if engine.load_game():
-                    pass  # load_game already shows confirmation
-                else:
-                    pass  # load_game already shows "no save found"
+            response = view.get_input(
+                "\n  A saved game was found. Resume? (y/n) > "
+            )
+            if response and response.strip().lower() == "y":
+                seed = saved_data.get("maze_seed")
+                rows = saved_data.get("maze_rows", 8)
+                cols = saved_data.get("maze_cols", 8)
+                maze = Maze(rows=rows, cols=cols, seed=seed)
+                engine = Engine(maze, repo, view)
+                engine.load_game()
+                resuming = True
             else:
-                # New game — reset question bank for fresh questions
-                repo.reset_questions()
+                maze = Maze()
+                repo.delete_save("default")
+                engine = Engine(maze, repo, view)
         except (EOFError, KeyboardInterrupt):
-            pass
+            maze = Maze()
+            engine = Engine(maze, repo, view)
+    else:
+        if saved_data:
+            repo.delete_save("default")
+        maze = Maze()
+        engine = Engine(maze, repo, view)
 
-        engine.run()
+    if not resuming:
+        repo.reset_questions()
+
+    engine.run()
+
+
+if __name__ == "__main__":
+    _start_cli()

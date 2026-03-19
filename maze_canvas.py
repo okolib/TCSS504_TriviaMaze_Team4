@@ -60,21 +60,22 @@ class Theme:
 
 
 FIGURE_INITIALS = {
-    "Leonardo da Vinci": "DV",
+    "Leonardo DiCaprio": "LC",
+    "Michael Jackson": "MJ",
     "Abraham Lincoln": "AL",
-    "Cleopatra": "CL",
+    "Walt Disney": "WD",
+    "Taylor Swift": "TS",
 }
 
-WING_NAMES = ["FOYER", "ART", "HISTORY", "ANCIENT", "EXIT"]
+WING_NAMES = ["ENTRY", "R1", "R2", "R3", "R4", "R5", "R6", "EXIT"]
 
 
 class MazeCanvas(QWidget):
     """Renders the Waxworks maze as a 2D grid with fog-of-war."""
 
-    # Geometry constants
-    CELL_SIZE = 80
-    DOOR_WIDTH = 6
-    MARGIN = 50
+    CELL_SIZE = 60
+    DOOR_WIDTH = 5
+    MARGIN = 40
 
     def __init__(self, parent=None):
         super().__init__(parent)

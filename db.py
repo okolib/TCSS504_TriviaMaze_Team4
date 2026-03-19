@@ -49,97 +49,130 @@ class LastAskedRecord(SQLModel, table=True):
     last_question_id: int
 
 
-# ======================================================================
-# Seed Data — Museum-themed questions (3+ per figure)
-# ======================================================================
+class ConfigRecord(SQLModel, table=True):
+    """Simple key-value store for internal metadata (e.g. seed version)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    key: str = Field(unique=True)
+    value: str
+
+
+SEED_DATA_VERSION = "v2-pop-culture-5fig"
 
 SEED_QUESTIONS: List[Dict[str, str]] = [
-    # --- Leonardo da Vinci (Art Gallery) ---
-    {
-        "figure_name": "Leonardo da Vinci",
-        "zone": "Art Gallery",
-        "question_text": "Who painted the Mona Lisa?",
-        "choice_a": "Michelangelo",
-        "choice_b": "Leonardo da Vinci",
-        "choice_c": "Raphael",
-        "correct_key": "B",
-    },
-    {
-        "figure_name": "Leonardo da Vinci",
-        "zone": "Art Gallery",
-        "question_text": "What famous fresco did Leonardo paint on the wall of Santa Maria delle Grazie?",
-        "choice_a": "The Last Supper",
-        "choice_b": "The Creation of Adam",
-        "choice_c": "The School of Athens",
-        "correct_key": "A",
-    },
-    {
-        "figure_name": "Leonardo da Vinci",
-        "zone": "Art Gallery",
-        "question_text": "Leonardo da Vinci kept his private notes written in what unusual way?",
-        "choice_a": "In invisible ink",
-        "choice_b": "In mirror script (backwards)",
-        "choice_c": "In Ancient Greek",
-        "correct_key": "B",
-    },
+    # ── Leonardo DiCaprio (Hollywood Wing) ──
+    {"figure_name": "Leonardo DiCaprio", "zone": "Hollywood Wing",
+     "question_text": "Which 1997 blockbuster features me shouting 'I'm the king of the world!' on the bow of a ship?",
+     "choice_a": "Pearl Harbor", "choice_b": "Titanic", "choice_c": "The Great Gatsby", "correct_key": "B"},
+    {"figure_name": "Leonardo DiCaprio", "zone": "Hollywood Wing",
+     "question_text": "In 'Inception,' what small object does my character use to distinguish dreams from reality?",
+     "choice_a": "A spinning top", "choice_b": "A pocket watch", "choice_c": "A coin", "correct_key": "A"},
+    {"figure_name": "Leonardo DiCaprio", "zone": "Hollywood Wing",
+     "question_text": "Which film earned me my first Academy Award for Best Actor?",
+     "choice_a": "The Wolf of Wall Street", "choice_b": "Blood Diamond", "choice_c": "The Revenant", "correct_key": "C"},
+    {"figure_name": "Leonardo DiCaprio", "zone": "Hollywood Wing",
+     "question_text": "In 'The Wolf of Wall Street,' which real-life stockbroker did I portray?",
+     "choice_a": "Bernie Madoff", "choice_b": "Jordan Belfort", "choice_c": "Ivan Boesky", "correct_key": "B"},
+    {"figure_name": "Leonardo DiCaprio", "zone": "Hollywood Wing",
+     "question_text": "Which Christopher Nolan film features me infiltrating dreams within dreams?",
+     "choice_a": "Interstellar", "choice_b": "The Dark Knight", "choice_c": "Inception", "correct_key": "C"},
+    {"figure_name": "Leonardo DiCaprio", "zone": "Hollywood Wing",
+     "question_text": "In 'Django Unchained,' what is the name of my plantation-owning character?",
+     "choice_a": "Calvin Candie", "choice_b": "Stephen", "choice_c": "Big Daddy", "correct_key": "A"},
+    {"figure_name": "Leonardo DiCaprio", "zone": "Hollywood Wing",
+     "question_text": "In which Martin Scorsese film do I play an undercover cop in Boston's criminal underworld?",
+     "choice_a": "Goodfellas", "choice_b": "The Departed", "choice_c": "Casino", "correct_key": "B"},
 
-    # --- Abraham Lincoln (American History) ---
-    {
-        "figure_name": "Abraham Lincoln",
-        "zone": "American History",
-        "question_text": "Which president issued the Emancipation Proclamation?",
-        "choice_a": "George Washington",
-        "choice_b": "Abraham Lincoln",
-        "choice_c": "Thomas Jefferson",
-        "correct_key": "B",
-    },
-    {
-        "figure_name": "Abraham Lincoln",
-        "zone": "American History",
-        "question_text": "In what year did the American Civil War begin?",
-        "choice_a": "1848",
-        "choice_b": "1861",
-        "choice_c": "1876",
-        "correct_key": "B",
-    },
-    {
-        "figure_name": "Abraham Lincoln",
-        "zone": "American History",
-        "question_text": "What famous speech did Lincoln deliver at a battlefield in Pennsylvania?",
-        "choice_a": "The Gettysburg Address",
-        "choice_b": "The Farewell Address",
-        "choice_c": "The Declaration of Independence",
-        "correct_key": "A",
-    },
+    # ── Michael Jackson (Music Hall) ──
+    {"figure_name": "Michael Jackson", "zone": "Music Hall",
+     "question_text": "Which album, released in 1982, is the best-selling album of all time?",
+     "choice_a": "Bad", "choice_b": "Thriller", "choice_c": "Off the Wall", "correct_key": "B"},
+    {"figure_name": "Michael Jackson", "zone": "Music Hall",
+     "question_text": "What signature dance move did I first perform on the 'Motown 25' TV special during 'Billie Jean'?",
+     "choice_a": "The Robot", "choice_b": "The Moonwalk", "choice_c": "The Spin", "correct_key": "B"},
+    {"figure_name": "Michael Jackson", "zone": "Music Hall",
+     "question_text": "What was the name of my famous ranch and amusement park in Santa Barbara County?",
+     "choice_a": "Graceland", "choice_b": "Neverland Ranch", "choice_c": "Paisley Park", "correct_key": "B"},
+    {"figure_name": "Michael Jackson", "zone": "Music Hall",
+     "question_text": "Which of my music videos features a 14-minute storyline with zombies and werewolves?",
+     "choice_a": "Beat It", "choice_b": "Thriller", "choice_c": "Bad", "correct_key": "B"},
+    {"figure_name": "Michael Jackson", "zone": "Music Hall",
+     "question_text": "I started my career as the youngest member of which family group?",
+     "choice_a": "The Jackson 5", "choice_b": "The Commodores", "choice_c": "The Temptations", "correct_key": "A"},
+    {"figure_name": "Michael Jackson", "zone": "Music Hall",
+     "question_text": "Which single features the lyric 'Annie, are you OK? Are you OK, Annie?'",
+     "choice_a": "Bad", "choice_b": "Beat It", "choice_c": "Smooth Criminal", "correct_key": "C"},
+    {"figure_name": "Michael Jackson", "zone": "Music Hall",
+     "question_text": "What was my widely-known nickname given by the media?",
+     "choice_a": "The King of Pop", "choice_b": "The Prince of Pop", "choice_c": "The Emperor of Music", "correct_key": "A"},
 
-    # --- Cleopatra (Ancient History) ---
-    {
-        "figure_name": "Cleopatra",
-        "zone": "Ancient History",
-        "question_text": "Who was the last pharaoh of Ancient Egypt?",
-        "choice_a": "Nefertiti",
-        "choice_b": "Cleopatra",
-        "choice_c": "Hatshepsut",
-        "correct_key": "B",
-    },
-    {
-        "figure_name": "Cleopatra",
-        "zone": "Ancient History",
-        "question_text": "Which Roman general was Cleopatra's famous ally and lover?",
-        "choice_a": "Augustus",
-        "choice_b": "Julius Caesar",
-        "choice_c": "Nero",
-        "correct_key": "B",
-    },
-    {
-        "figure_name": "Cleopatra",
-        "zone": "Ancient History",
-        "question_text": "What river was essential to the Egyptian civilization Cleopatra ruled?",
-        "choice_a": "The Tigris",
-        "choice_b": "The Euphrates",
-        "choice_c": "The Nile",
-        "correct_key": "C",
-    },
+    # ── Abraham Lincoln (History Gallery) ──
+    {"figure_name": "Abraham Lincoln", "zone": "History Gallery",
+     "question_text": "Which proclamation did I issue in 1863 to free slaves in Confederate states?",
+     "choice_a": "The Bill of Rights", "choice_b": "The Emancipation Proclamation", "choice_c": "The Monroe Doctrine", "correct_key": "B"},
+    {"figure_name": "Abraham Lincoln", "zone": "History Gallery",
+     "question_text": "In what year did the American Civil War begin during my presidency?",
+     "choice_a": "1848", "choice_b": "1861", "choice_c": "1876", "correct_key": "B"},
+    {"figure_name": "Abraham Lincoln", "zone": "History Gallery",
+     "question_text": "What famous speech did I deliver at a Pennsylvania battlefield in November 1863?",
+     "choice_a": "The Gettysburg Address", "choice_b": "The Farewell Address", "choice_c": "The First Inaugural", "correct_key": "A"},
+    {"figure_name": "Abraham Lincoln", "zone": "History Gallery",
+     "question_text": "At which venue was I assassinated on April 14, 1865?",
+     "choice_a": "The White House", "choice_b": "Ford's Theatre", "choice_c": "The Capitol Building", "correct_key": "B"},
+    {"figure_name": "Abraham Lincoln", "zone": "History Gallery",
+     "question_text": "Which political party did I represent as the 16th President?",
+     "choice_a": "Democratic", "choice_b": "Republican", "choice_c": "Whig", "correct_key": "B"},
+    {"figure_name": "Abraham Lincoln", "zone": "History Gallery",
+     "question_text": "What nickname was I commonly known by during my lifetime?",
+     "choice_a": "Honest Abe", "choice_b": "Old Hickory", "choice_c": "The General", "correct_key": "A"},
+    {"figure_name": "Abraham Lincoln", "zone": "History Gallery",
+     "question_text": "Before becoming president, what was my primary profession?",
+     "choice_a": "A farmer", "choice_b": "A lawyer", "choice_c": "A military general", "correct_key": "B"},
+
+    # ── Walt Disney (Animation Vault) ──
+    {"figure_name": "Walt Disney", "zone": "Animation Vault",
+     "question_text": "What was Disney Studios' first full-length animated feature film, released in 1937?",
+     "choice_a": "Pinocchio", "choice_b": "Snow White and the Seven Dwarfs", "choice_c": "Fantasia", "correct_key": "B"},
+    {"figure_name": "Walt Disney", "zone": "Animation Vault",
+     "question_text": "Which character did I originally voice myself, beginning in 1928?",
+     "choice_a": "Donald Duck", "choice_b": "Goofy", "choice_c": "Mickey Mouse", "correct_key": "C"},
+    {"figure_name": "Walt Disney", "zone": "Animation Vault",
+     "question_text": "In 'The Lion King,' what is the name of Simba's father?",
+     "choice_a": "Mufasa", "choice_b": "Scar", "choice_c": "Rafiki", "correct_key": "A"},
+    {"figure_name": "Walt Disney", "zone": "Animation Vault",
+     "question_text": "Which Disney theme park opened first, in Anaheim, California, in 1955?",
+     "choice_a": "Walt Disney World", "choice_b": "Disneyland", "choice_c": "EPCOT", "correct_key": "B"},
+    {"figure_name": "Walt Disney", "zone": "Animation Vault",
+     "question_text": "In 'Frozen,' what is the name of the magical snowman who loves warm hugs?",
+     "choice_a": "Marshmallow", "choice_b": "Olaf", "choice_c": "Sven", "correct_key": "B"},
+    {"figure_name": "Walt Disney", "zone": "Animation Vault",
+     "question_text": "Which Pixar film features a rat who dreams of becoming a Parisian chef?",
+     "choice_a": "Finding Nemo", "choice_b": "Up", "choice_c": "Ratatouille", "correct_key": "C"},
+    {"figure_name": "Walt Disney", "zone": "Animation Vault",
+     "question_text": "What famous inspirational quote is attributed to me about pursuing dreams?",
+     "choice_a": "If you can dream it, you can do it", "choice_b": "To infinity and beyond", "choice_c": "Hakuna Matata", "correct_key": "A"},
+
+    # ── Taylor Swift (Pop Culture Lounge) ──
+    {"figure_name": "Taylor Swift", "zone": "Pop Culture Lounge",
+     "question_text": "Which album marked my transition from country music to pop, released in 2014?",
+     "choice_a": "Red", "choice_b": "1989", "choice_c": "Reputation", "correct_key": "B"},
+    {"figure_name": "Taylor Swift", "zone": "Pop Culture Lounge",
+     "question_text": "What was the name of my record-breaking 2023-2024 concert tour?",
+     "choice_a": "The Eras Tour", "choice_b": "The Reputation Tour", "choice_c": "The 1989 World Tour", "correct_key": "A"},
+    {"figure_name": "Taylor Swift", "zone": "Pop Culture Lounge",
+     "question_text": "Which song starts with the lyrics 'We are never ever ever getting back together'?",
+     "choice_a": "Love Story", "choice_b": "We Are Never Getting Back Together", "choice_c": "Shake It Off", "correct_key": "B"},
+    {"figure_name": "Taylor Swift", "zone": "Pop Culture Lounge",
+     "question_text": "What was my debut single, released in 2006?",
+     "choice_a": "Love Story", "choice_b": "Tim McGraw", "choice_c": "Our Song", "correct_key": "B"},
+    {"figure_name": "Taylor Swift", "zone": "Pop Culture Lounge",
+     "question_text": "Which album features the hit singles 'Anti-Hero' and 'Lavender Haze'?",
+     "choice_a": "Folklore", "choice_b": "Evermore", "choice_c": "Midnights", "correct_key": "C"},
+    {"figure_name": "Taylor Swift", "zone": "Pop Culture Lounge",
+     "question_text": "My 'Taylor's Version' re-recording project began with which album?",
+     "choice_a": "Fearless (Taylor's Version)", "choice_b": "Red (Taylor's Version)", "choice_c": "1989 (Taylor's Version)", "correct_key": "A"},
+    {"figure_name": "Taylor Swift", "zone": "Pop Culture Lounge",
+     "question_text": "Which music video features me in a satirical take on fame, ending in a bathtub of diamonds?",
+     "choice_a": "Bad Blood", "choice_b": "Blank Space", "choice_c": "Look What You Made Me Do", "correct_key": "C"},
 ]
 
 
@@ -162,15 +195,12 @@ class Repository:
     def __init__(self, db_path: str = "waxworks.db"):
         """Initialize the SQLite engine and create tables.
 
-        Auto-seeds questions if the QuestionRecord table is empty.
+        Auto-seeds questions if the QuestionRecord table is empty, and
+        re-seeds when the built-in question data version changes.
         """
         self._engine = create_engine(f"sqlite:///{db_path}", echo=False)
         SQLModel.metadata.create_all(self._engine)
-        # Auto-seed if empty
-        with Session(self._engine) as session:
-            count = session.exec(select(QuestionRecord)).first()
-            if count is None:
-                self.seed_questions(SEED_QUESTIONS)
+        self._ensure_seed_data()
 
     # ------------------------------------------------------------------
     # Save / Load
@@ -324,3 +354,44 @@ class Repository:
                 )
                 session.add(record)
             session.commit()
+
+    def _ensure_seed_data(self) -> None:
+        """Reseed the question bank when SEED_DATA_VERSION changes."""
+        with Session(self._engine) as session:
+            cfg = session.exec(
+                select(ConfigRecord).where(ConfigRecord.key == "seed_version")
+            ).first()
+            current = cfg.value if cfg else None
+
+        if current == SEED_DATA_VERSION:
+            return
+
+        with Session(self._engine) as session:
+            for rec in session.exec(select(QuestionRecord)).all():
+                session.delete(rec)
+            for rec in session.exec(select(LastAskedRecord)).all():
+                session.delete(rec)
+            session.commit()
+
+        self.seed_questions(SEED_QUESTIONS)
+
+        with Session(self._engine) as session:
+            cfg = session.exec(
+                select(ConfigRecord).where(ConfigRecord.key == "seed_version")
+            ).first()
+            if cfg:
+                cfg.value = SEED_DATA_VERSION
+            else:
+                cfg = ConfigRecord(key="seed_version", value=SEED_DATA_VERSION)
+            session.add(cfg)
+            session.commit()
+
+    def delete_save(self, slot_name: str = "default") -> None:
+        """Delete a saved game slot."""
+        with Session(self._engine) as session:
+            record = session.exec(
+                select(SaveRecord).where(SaveRecord.slot_name == slot_name)
+            ).first()
+            if record:
+                session.delete(record)
+                session.commit()

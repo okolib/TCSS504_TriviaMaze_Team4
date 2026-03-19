@@ -1,9 +1,7 @@
-"""Waxworks: The Midnight Curse — Maze Module (5×5 MVP)
+"""Waxworks: The Midnight Curse — Maze Module (8×8)
 
 Domain logic: grid layout, movement, trivia, fog of war.
 This is the ONLY module that owns game rules.
-
-Emergency fallback implementation — local only, not pushed.
 """
 
 from collections import deque
@@ -171,15 +169,12 @@ class MazeProtocol(Protocol):
 # Figure placement data (per RFC §2.2)
 # ======================================================================
 
-# (row, col) → (figure_name, zone)
-# Eligible rooms: those adjacent to a locked gate (one per row)
-FIGURE_ROOMS = [(1, 1), (2, 2), (3, 3)]
-
-# Figures and their themed zones
 FIGURES = [
-    ("Leonardo da Vinci", "Art Gallery"),
-    ("Abraham Lincoln", "American History"),
-    ("Cleopatra", "Ancient History"),
+    ("Leonardo DiCaprio", "Hollywood Wing"),
+    ("Michael Jackson", "Music Hall"),
+    ("Abraham Lincoln", "History Gallery"),
+    ("Walt Disney", "Animation Vault"),
+    ("Taylor Swift", "Pop Culture Lounge"),
 ]
 
 
@@ -188,24 +183,16 @@ FIGURES = [
 # ======================================================================
 
 class Maze:
-    """Concrete 5×5 Maze with staircase layout, fog of war, and trivia.
+    """Concrete 8×8 Maze with randomised layout, fog of war, and trivia.
 
-    Layout from interfaces.md §6:
-        (0,0) ENTRANCE
-        Row 0: (0,0)──(0,1)──(0,2)
-        South: (0,0)↔(1,0)
-        Row 1: (1,0)──(1,1)═🔒═(1,2)──(1,3)   Da Vinci at (1,1)
-        South: (1,2)↔(2,1)
-        Row 2: (2,1)──(2,2)═🔒═(2,3)──(2,4)   Lincoln at (2,2)
-        South: (2,3)↔(3,2)
-        Row 3: (3,2)──(3,3)═🔒═(3,4)           Cleopatra at (3,3)
-        South: (3,4)↔(4,4)
-        Row 4: (4,3)──(4,4) EXIT
+    Uses DFS-carved spanning tree + BFS critical-path analysis to place
+    5 locked gates guarded by pop-culture wax figures.
     """
 
-    def __init__(self, rows: int = 5, cols: int = 5,
+    def __init__(self, rows: int = 8, cols: int = 8,
                  trivia_data: Optional[List[TriviaQuestion]] = None,
                  seed: Optional[int] = None):
+        self._seed = seed if seed is not None else random.randint(0, 2**31)
         self.rows = rows
         self.cols = cols
         self.player_position = Position(0, 0)
@@ -216,7 +203,7 @@ class Maze:
         self.rooms: Dict[Tuple[int, int], Room] = {}
 
         self._neighbors: Dict[Tuple[int, int, Direction], Tuple[int, int]] = {}
-        self._rng = random.Random(seed)
+        self._rng = random.Random(self._seed)
         self._build_maze()
 
     # ------------------------------------------------------------------
@@ -224,7 +211,9 @@ class Maze:
     # ------------------------------------------------------------------
 
     def _build_maze(self):
-        """Build a randomized 5×5 maze using DFS + BFS critical path."""
+        """Build a randomized 8×8 maze using DFS + BFS critical path."""
+        num_figures = len(FIGURES)
+
         # Step 1: Initialize all rooms with WALLs
         for r in range(self.rows):
             for c in range(self.cols):
@@ -237,21 +226,19 @@ class Maze:
         visited = set()
         self._dfs_carve(0, 0, visited)
 
-        # Step 3: Add 2 extra edges (shortcuts) for exploration variety
-        self._add_shortcuts(2)
+        # Step 3: Add extra edges (shortcuts) for exploration variety
+        self._add_shortcuts(max(4, self.rows // 2))
 
         # Step 4: Find critical path from entrance to exit via BFS
         path = self._bfs_path((0, 0), (self.rows - 1, self.cols - 1))
-        if not path or len(path) < 5:
-            # Fallback: regenerate if path is too short
+        if not path or len(path) < num_figures + 3:
             self.rooms.clear()
             self._neighbors.clear()
             self._build_maze()
             return
 
-        # Step 5: Place 3 locked gates along the critical path
-        # Choose 3 evenly spaced edges on the path
-        gate_positions = self._select_gate_edges(path, 3)
+        # Step 5: Place locked gates along the critical path
+        gate_positions = self._select_gate_edges(path, num_figures)
         figure_rooms_list = []
         for (r1, c1), direction, (r2, c2) in gate_positions:
             self._set_door(r1, c1, direction, r2, c2, OPPOSITE[direction],
@@ -361,6 +348,10 @@ class Maze:
     # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
+
+    def get_seed(self) -> int:
+        """Return the RNG seed used to generate this maze."""
+        return self._seed
 
     def get_rooms(self) -> Dict[Tuple[int, int], Room]:
         return self.rooms
@@ -491,7 +482,7 @@ class Maze:
     # ------------------------------------------------------------------
 
     def get_fog_map(self) -> List[List[FogMapCell]]:
-        """Return a 5×5 grid of FogMapCells with visibility info."""
+        """Return the grid of FogMapCells with visibility info."""
         visited_set = set((p.row, p.col) for p in self.visited_positions)
         player_rc = (self.player_position.row, self.player_position.col)
 
