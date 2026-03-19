@@ -295,6 +295,7 @@ class QtView(QMainWindow):
         self._pending_input_callback = None
         self._current_question = None
         self._in_confrontation = False
+        self._pending_confrontation = None
         self._view_mode = "first_person"
         self._player_facing = Direction.SOUTH
         self._audio = AudioManager()
@@ -481,24 +482,36 @@ class QtView(QMainWindow):
         doors_layout.addWidget(self._doors_label)
         sidebar.addWidget(doors_group)
 
-        # Navigation buttons
+        # Navigation buttons (relative to facing direction)
         nav_group = QGroupBox("🧭 Navigation")
         nav_grid = QGridLayout(nav_group)
 
-        self._btn_north = QPushButton("⬆ North")
-        self._btn_south = QPushButton("⬇ South")
-        self._btn_east = QPushButton("East ➡")
-        self._btn_west = QPushButton("⬅ West")
+        _nav_btn_style = """
+            QPushButton {
+                font-size: 22px;
+                min-width: 50px;
+                min-height: 40px;
+                padding: 4px;
+            }
+        """
+        self._btn_forward = QPushButton("\u25B2")
+        self._btn_back = QPushButton("\u25BC")
+        self._btn_left = QPushButton("\u25C0")
+        self._btn_right = QPushButton("\u25B6")
 
-        self._btn_north.clicked.connect(lambda: self._issue_command("move north"))
-        self._btn_south.clicked.connect(lambda: self._issue_command("move south"))
-        self._btn_east.clicked.connect(lambda: self._issue_command("move east"))
-        self._btn_west.clicked.connect(lambda: self._issue_command("move west"))
+        for btn in (self._btn_forward, self._btn_back,
+                    self._btn_left, self._btn_right):
+            btn.setStyleSheet(_nav_btn_style)
 
-        nav_grid.addWidget(self._btn_north, 0, 1)
-        nav_grid.addWidget(self._btn_west, 1, 0)
-        nav_grid.addWidget(self._btn_east, 1, 2)
-        nav_grid.addWidget(self._btn_south, 2, 1)
+        self._btn_forward.clicked.connect(lambda: self._move_relative("forward"))
+        self._btn_back.clicked.connect(lambda: self._move_relative("back"))
+        self._btn_left.clicked.connect(lambda: self._move_relative("left"))
+        self._btn_right.clicked.connect(lambda: self._move_relative("right"))
+
+        nav_grid.addWidget(self._btn_forward, 0, 1)
+        nav_grid.addWidget(self._btn_left, 1, 0)
+        nav_grid.addWidget(self._btn_right, 1, 2)
+        nav_grid.addWidget(self._btn_back, 2, 1)
         sidebar.addWidget(nav_group)
 
         # Action buttons
@@ -568,6 +581,7 @@ class QtView(QMainWindow):
 
     def display_welcome(self) -> None:
         """Show the themed welcome banner in the game log."""
+        self._update_nav_labels()
         self._log(
             "<b style='color:#e6b832;'>═══════════════════════════════════════</b><br>"
             "<b style='color:#e6b832;'>  WAXWORKS: THE MIDNIGHT CURSE</b><br>"
@@ -582,7 +596,10 @@ class QtView(QMainWindow):
     def display_room(self, room: Room, position: Position,
                      curse_level: int, game_state: GameState) -> None:
         """Display the current room description with zone flavor text."""
-        # Update room label
+        defeated = getattr(game_state, "defeated_figures",
+                           getattr(game_state, "answered_figures", []))
+        self._fp_canvas.set_defeated_figures(defeated)
+
         self._room_label.setText(f"Room ({position.row}, {position.col})")
 
         # Build description
@@ -680,6 +697,7 @@ class QtView(QMainWindow):
         }
         if direction.lower() in dir_map and result in ("moved", "staircase"):
             self._player_facing = dir_map[direction.lower()]
+            self._update_nav_labels()
             self._fp_canvas.start_walk_animation()
             self._audio.play("move")
 
@@ -713,9 +731,11 @@ class QtView(QMainWindow):
     def display_confrontation(self, question_dict: dict) -> None:
         """Display a wax figure confrontation with the trivia question."""
         if self._in_confrontation:
+            self._pending_confrontation = question_dict
             return
 
         self._current_question = question_dict
+        self._pending_confrontation = None
         self._in_confrontation = True
         figure = question_dict.get("figure_name", "Unknown")
 
@@ -731,6 +751,10 @@ class QtView(QMainWindow):
         dialog.answer_selected.connect(self._on_trivia_answer)
         dialog.exec()
         self._in_confrontation = False
+
+        if self._pending_confrontation:
+            QTimer.singleShot(100, lambda: self.display_confrontation(
+                self._pending_confrontation))
 
     def display_answer_result(self, result: str, curse_level: int) -> None:
         """Display the result of answering a question."""
@@ -840,6 +864,43 @@ class QtView(QMainWindow):
         # Auto-scroll to bottom
         scrollbar = self._game_log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    _LEFT_OF = {
+        Direction.NORTH: Direction.WEST, Direction.SOUTH: Direction.EAST,
+        Direction.EAST: Direction.NORTH, Direction.WEST: Direction.SOUTH,
+    }
+    _RIGHT_OF = {
+        Direction.NORTH: Direction.EAST, Direction.SOUTH: Direction.WEST,
+        Direction.EAST: Direction.SOUTH, Direction.WEST: Direction.NORTH,
+    }
+    _BEHIND = {
+        Direction.NORTH: Direction.SOUTH, Direction.SOUTH: Direction.NORTH,
+        Direction.EAST: Direction.WEST, Direction.WEST: Direction.EAST,
+    }
+
+    def _update_nav_labels(self) -> None:
+        """Update nav button tooltips to show compass mapping."""
+        f = self._player_facing
+        self._btn_forward.setToolTip(f.value.capitalize())
+        self._btn_back.setToolTip(self._BEHIND[f].value.capitalize())
+        self._btn_left.setToolTip(self._LEFT_OF[f].value.capitalize())
+        self._btn_right.setToolTip(self._RIGHT_OF[f].value.capitalize())
+
+    def _resolve_relative(self, rel: str) -> Direction:
+        """Convert a relative direction to an absolute Direction."""
+        f = self._player_facing
+        if rel == "forward":
+            return f
+        if rel == "back":
+            return self._BEHIND[f]
+        if rel == "left":
+            return self._LEFT_OF[f]
+        return self._RIGHT_OF[f]
+
+    def _move_relative(self, rel: str) -> None:
+        """Issue a move command using a relative direction."""
+        absolute = self._resolve_relative(rel)
+        self._issue_command(f"move {absolute.value}")
 
     def _issue_command(self, command: str) -> None:
         """Emit a command to the Engine."""
@@ -998,19 +1059,19 @@ class QtView(QMainWindow):
                 super().keyPressEvent(event)
             return
 
-        key_map = {
-            Qt.Key.Key_Up: "move north",
-            Qt.Key.Key_Down: "move south",
-            Qt.Key.Key_Left: "move west",
-            Qt.Key.Key_Right: "move east",
-            Qt.Key.Key_W: "move north",
-            Qt.Key.Key_S: "move south",
-            Qt.Key.Key_A: "move west",
-            Qt.Key.Key_D: "move east",
+        rel_map = {
+            Qt.Key.Key_Up: "forward",
+            Qt.Key.Key_W: "forward",
+            Qt.Key.Key_Down: "back",
+            Qt.Key.Key_S: "back",
+            Qt.Key.Key_Left: "left",
+            Qt.Key.Key_A: "left",
+            Qt.Key.Key_Right: "right",
+            Qt.Key.Key_D: "right",
         }
-        cmd = key_map.get(event.key())
-        if cmd:
-            self._issue_command(cmd)
+        rel = rel_map.get(event.key())
+        if rel:
+            self._move_relative(rel)
         else:
             super().keyPressEvent(event)
 

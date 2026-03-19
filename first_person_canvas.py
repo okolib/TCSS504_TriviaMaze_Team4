@@ -137,6 +137,7 @@ class FirstPersonCanvas(QWidget):
         self._fog_map = None
         self._player_pos = (0, 0)
         self._facing = Direction.SOUTH
+        self._defeated_figures: set[str] = set()
 
         # Walking animation state
         self._walk_frame = 0
@@ -206,6 +207,11 @@ class FirstPersonCanvas(QWidget):
     def set_facing(self, direction: Direction) -> None:
         """Update the direction the player is facing."""
         self._facing = direction
+        self.update()
+
+    def set_defeated_figures(self, defeated: list) -> None:
+        """Update the set of defeated figure names."""
+        self._defeated_figures = set(defeated)
         self.update()
 
     def start_walk_animation(self) -> None:
@@ -327,16 +333,18 @@ class FirstPersonCanvas(QWidget):
         self._draw_torch(painter, int(w * 0.12), int(h * 0.35))
         self._draw_torch(painter, int(w * 0.88), int(h * 0.35))
 
-        # Check for wax figure ahead
+        # Check for wax figure ahead (only undefeated)
         if ahead_1 and front_door != DoorState.WALL:
             if (ahead_1.has_trivia and ahead_1.figure_name and
+                    ahead_1.figure_name not in self._defeated_figures and
                     ahead_1.visibility in (RoomVisibility.VISIBLE,
                                            RoomVisibility.VISITED)):
                 self._draw_figure_silhouette(painter, w, h, depth=1,
                                              name=ahead_1.figure_name)
 
-        # Current room figure (confrontation!)
-        if (current.has_trivia and current.figure_name):
+        # Current room figure (only undefeated)
+        if (current.has_trivia and current.figure_name and
+                current.figure_name not in self._defeated_figures):
             self._draw_figure_silhouette(painter, w, h, depth=0,
                                          name=current.figure_name)
 
@@ -1088,37 +1096,51 @@ class FirstPersonCanvas(QWidget):
                         Qt.AlignmentFlag.AlignCenter, text)
 
     def _draw_compass(self, painter: QPainter, w: int, h: int):
+        """Rotated compass — the direction you're facing is always on top."""
         cx = w - 40
         cy = 35
-        r = 18
+        radius = 18
 
         painter.setPen(QPen(FPTheme.WALL_TRIM, 1))
         painter.setBrush(QBrush(QColor(20, 15, 30, 200)))
-        painter.drawEllipse(QPointF(cx, cy), r, r)
+        painter.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        rotation = {
+            Direction.NORTH: 0,
+            Direction.EAST: -90,
+            Direction.SOUTH: -180,
+            Direction.WEST: -270,
+        }
+        angle = math.radians(rotation[self._facing])
+
+        base_positions = {
+            "N": (0, -1),
+            "S": (0, 1),
+            "E": (1, 0),
+            "W": (-1, 0),
+        }
 
         painter.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-        dirs = {"N": (cx, cy - r + 10), "S": (cx, cy + r - 4),
-                "E": (cx + r - 8, cy + 3), "W": (cx - r + 3, cy + 3)}
-        for label, (x, y) in dirs.items():
+        for label, (bx, by) in base_positions.items():
+            rx = bx * math.cos(angle) - by * math.sin(angle)
+            ry = bx * math.sin(angle) + by * math.cos(angle)
+            lx = cx + rx * (radius - 7)
+            ly = cy + ry * (radius - 7) + 3
+
             is_facing = (
                 (label == "N" and self._facing == Direction.NORTH) or
                 (label == "S" and self._facing == Direction.SOUTH) or
                 (label == "E" and self._facing == Direction.EAST) or
                 (label == "W" and self._facing == Direction.WEST)
             )
-            color = FPTheme.TEXT_GOLD if is_facing else FPTheme.TEXT
-            painter.setPen(color)
-            painter.drawText(int(x), int(y), label)
+            painter.setPen(FPTheme.TEXT_GOLD if is_facing else FPTheme.TEXT)
+            painter.drawText(int(lx - 3), int(ly), label)
 
         painter.setPen(QPen(FPTheme.TEXT_GOLD, 2))
-        arrow_map = {
-            Direction.NORTH: (cx, cy - r + 14, cx, cy + 4),
-            Direction.SOUTH: (cx, cy + r - 14, cx, cy - 4),
-            Direction.EAST: (cx + r - 14, cy, cx - 4, cy),
-            Direction.WEST: (cx - r + 14, cy, cx + 4, cy),
-        }
-        ax1, ay1, ax2, ay2 = arrow_map[self._facing]
-        painter.drawLine(QPointF(ax2, ay2), QPointF(ax1, ay1))
+        painter.drawLine(
+            QPointF(cx, cy + 4),
+            QPointF(cx, cy - radius + 6),
+        )
 
     def _draw_minimap(self, painter: QPainter, w: int, h: int):
         """Enhanced minimap with larger cells, glow border, locked-door dots."""

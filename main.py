@@ -296,10 +296,17 @@ class Engine:
         state = self._maze.get_game_state()
         self._view.display_answer_result(result, state.wax_meter)
 
-        # Clear current question on correct answer
         if result == "correct":
             self._current_question = None
             self._confronted_figure = None
+        elif result == "wrong":
+            figure_name = self._confronted_figure
+            if figure_name:
+                q = self._repo.get_random_question(figure_name)
+                if q:
+                    self._current_question = q
+                else:
+                    self._current_question = None
 
         self.refresh_display()
         self._check_endgame()
