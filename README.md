@@ -42,9 +42,9 @@ python -m pytest tests/ -v
 
 You are trapped in a cursed wax museum at midnight. To escape:
 
-1. **Explore** the randomized 5×5 maze using compass directions (N/S/E/W)
+1. **Explore** the randomized 8×8 maze using compass directions (N/S/E/W)
 2. **Confront** wax figures that block locked gates — answer their trivia to pass
-3. **Defeat all 3 figures** to unlock the path to the exit
+3. **Defeat all 5 figures** to unlock the path to the exit
 4. **Escape** before the Curse Meter reaches 100%
 
 Wrong answers increase the curse by 20%. There are no alternate routes around
