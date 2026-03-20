@@ -140,8 +140,8 @@ The codebase enforces strict boundary rules:
 
 | Team Member | Role | Primary Files |
 |-------------|------|---------------|
-| **Mario** | GUI / View Engineer | `qt_view.py`, `maze_canvas.py`, `first_person_canvas.py`, `main_gui.py` |
-| **Sowmya** | Engine / Controller, Audio & Assets | `main.py`, `audio.py`, portraits, audio assets, bug fixes |
+| **Mario** | GUI / View Engineer | `qt_view.py`, `maze_canvas.py`, `first_person_canvas.py`, `main_gui.py`, bug fixes |
+| **Sowmya** | Engine / Controller, Audio & Assets | `main.py`, `main_gui.py`, `maze_canvas.py`, `audio.py`, portraits, audio assets, bug fixes |
 | **Megan** | Maze / Domain Logic, Core GUI/CLI | `maze.py`, `view.py`, randomized maze generation, domain tests |
 | **Boma** | Database / Persistence | `db.py`, SQLModel schema, question bank, save/load |
 
