@@ -482,37 +482,54 @@ class QtView(QMainWindow):
         doors_layout.addWidget(self._doors_label)
         sidebar.addWidget(doors_group)
 
-        # Navigation buttons (relative to facing direction)
+        # Navigation buttons (absolute compass directions)
         nav_group = QGroupBox("🧭 Navigation")
         nav_grid = QGridLayout(nav_group)
 
         _nav_btn_style = """
             QPushButton {
-                font-size: 22px;
-                min-width: 50px;
-                min-height: 40px;
-                padding: 4px;
+                font-size: 11px;
+                font-weight: bold;
+                min-width: 36px;
+                min-height: 28px;
+                padding: 2px 4px;
             }
         """
-        self._btn_forward = QPushButton("\u25B2")
-        self._btn_back = QPushButton("\u25BC")
-        self._btn_left = QPushButton("\u25C0")
-        self._btn_right = QPushButton("\u25B6")
+        self._btn_north = QPushButton("▲ N")
+        self._btn_south = QPushButton("▼ S")
+        self._btn_west = QPushButton("◀ W")
+        self._btn_east = QPushButton("▶ E")
 
-        for btn in (self._btn_forward, self._btn_back,
-                    self._btn_left, self._btn_right):
+        for btn in (self._btn_north, self._btn_south,
+                    self._btn_west, self._btn_east):
             btn.setStyleSheet(_nav_btn_style)
 
-        self._btn_forward.clicked.connect(lambda: self._move_relative("forward"))
-        self._btn_back.clicked.connect(lambda: self._move_relative("back"))
-        self._btn_left.clicked.connect(lambda: self._move_relative("left"))
-        self._btn_right.clicked.connect(lambda: self._move_relative("right"))
+        self._btn_north.clicked.connect(lambda: self._issue_command("move north"))
+        self._btn_south.clicked.connect(lambda: self._issue_command("move south"))
+        self._btn_west.clicked.connect(lambda: self._issue_command("move west"))
+        self._btn_east.clicked.connect(lambda: self._issue_command("move east"))
 
-        nav_grid.addWidget(self._btn_forward, 0, 1)
-        nav_grid.addWidget(self._btn_left, 1, 0)
-        nav_grid.addWidget(self._btn_right, 1, 2)
-        nav_grid.addWidget(self._btn_back, 2, 1)
+        nav_grid.addWidget(self._btn_north, 0, 1)
+        nav_grid.addWidget(self._btn_west, 1, 0)
+        nav_grid.addWidget(self._btn_east, 1, 2)
+        nav_grid.addWidget(self._btn_south, 2, 1)
         sidebar.addWidget(nav_group)
+
+        # Controls help
+        controls_group = QGroupBox("🎮 Controls")
+        controls_layout = QVBoxLayout(controls_group)
+        controls_label = QLabel(
+            "<b>Move:</b> Arrow keys or W/A/S/D<br>"
+            "&nbsp;&nbsp;↑/W = North &nbsp; ↓/S = South<br>"
+            "&nbsp;&nbsp;←/A = West &nbsp;&nbsp; →/D = East<br>"
+            "<b>Trivia:</b> Click answer in dialog<br>"
+            "<b>View:</b> Toggle 🗺/👁 button"
+        )
+        controls_label.setFont(QFont("Courier New", 9))
+        controls_label.setWordWrap(True)
+        controls_label.setStyleSheet("color: #786890;")
+        controls_layout.addWidget(controls_label)
+        sidebar.addWidget(controls_group)
 
         # Action buttons
         action_group = QGroupBox("Actions")
@@ -581,7 +598,6 @@ class QtView(QMainWindow):
 
     def display_welcome(self) -> None:
         """Show the themed welcome banner in the game log."""
-        self._update_nav_labels()
         self._log(
             "<b style='color:#e6b832;'>═══════════════════════════════════════</b><br>"
             "<b style='color:#e6b832;'>  WAXWORKS: THE MIDNIGHT CURSE</b><br>"
@@ -697,7 +713,6 @@ class QtView(QMainWindow):
         }
         if direction.lower() in dir_map and result in ("moved", "staircase"):
             self._player_facing = dir_map[direction.lower()]
-            self._update_nav_labels()
             self._fp_canvas.start_walk_animation()
             self._audio.play("move")
 
@@ -865,42 +880,6 @@ class QtView(QMainWindow):
         scrollbar = self._game_log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    _LEFT_OF = {
-        Direction.NORTH: Direction.WEST, Direction.SOUTH: Direction.EAST,
-        Direction.EAST: Direction.NORTH, Direction.WEST: Direction.SOUTH,
-    }
-    _RIGHT_OF = {
-        Direction.NORTH: Direction.EAST, Direction.SOUTH: Direction.WEST,
-        Direction.EAST: Direction.SOUTH, Direction.WEST: Direction.NORTH,
-    }
-    _BEHIND = {
-        Direction.NORTH: Direction.SOUTH, Direction.SOUTH: Direction.NORTH,
-        Direction.EAST: Direction.WEST, Direction.WEST: Direction.EAST,
-    }
-
-    def _update_nav_labels(self) -> None:
-        """Update nav button tooltips to show compass mapping."""
-        f = self._player_facing
-        self._btn_forward.setToolTip(f.value.capitalize())
-        self._btn_back.setToolTip(self._BEHIND[f].value.capitalize())
-        self._btn_left.setToolTip(self._LEFT_OF[f].value.capitalize())
-        self._btn_right.setToolTip(self._RIGHT_OF[f].value.capitalize())
-
-    def _resolve_relative(self, rel: str) -> Direction:
-        """Convert a relative direction to an absolute Direction."""
-        f = self._player_facing
-        if rel == "forward":
-            return f
-        if rel == "back":
-            return self._BEHIND[f]
-        if rel == "left":
-            return self._LEFT_OF[f]
-        return self._RIGHT_OF[f]
-
-    def _move_relative(self, rel: str) -> None:
-        """Issue a move command using a relative direction."""
-        absolute = self._resolve_relative(rel)
-        self._issue_command(f"move {absolute.value}")
 
     def _issue_command(self, command: str) -> None:
         """Emit a command to the Engine."""
@@ -1051,7 +1030,7 @@ class QtView(QMainWindow):
     # ------------------------------------------------------------------
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Handle arrow-key movement (only after game starts)."""
+        """Handle arrow-key movement with absolute compass directions."""
         if not self._game_started:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
                 self._on_start_clicked()
@@ -1059,19 +1038,19 @@ class QtView(QMainWindow):
                 super().keyPressEvent(event)
             return
 
-        rel_map = {
-            Qt.Key.Key_Up: "forward",
-            Qt.Key.Key_W: "forward",
-            Qt.Key.Key_Down: "back",
-            Qt.Key.Key_S: "back",
-            Qt.Key.Key_Left: "left",
-            Qt.Key.Key_A: "left",
-            Qt.Key.Key_Right: "right",
-            Qt.Key.Key_D: "right",
+        compass_map = {
+            Qt.Key.Key_Up: "north",
+            Qt.Key.Key_W: "north",
+            Qt.Key.Key_Down: "south",
+            Qt.Key.Key_S: "south",
+            Qt.Key.Key_Left: "west",
+            Qt.Key.Key_A: "west",
+            Qt.Key.Key_Right: "east",
+            Qt.Key.Key_D: "east",
         }
-        rel = rel_map.get(event.key())
-        if rel:
-            self._move_relative(rel)
+        direction = compass_map.get(event.key())
+        if direction:
+            self._issue_command(f"move {direction}")
         else:
             super().keyPressEvent(event)
 
