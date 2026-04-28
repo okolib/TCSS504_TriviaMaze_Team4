@@ -1,1 +1,2 @@
 sqlmodel>=0.0.14
+PySide6>=6.5

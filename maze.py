@@ -1,15 +1,14 @@
-"""Waxworks: The Midnight Curse — Maze Module (5×5 MVP)
+"""Waxworks: The Midnight Curse — Maze Module (8×8)
 
 Domain logic: grid layout, movement, trivia, fog of war.
 This is the ONLY module that owns game rules.
-
-Emergency fallback implementation — local only, not pushed.
 """
 
 from collections import deque
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, Protocol, List, Dict, Tuple
+import random
 
 
 # ======================================================================
@@ -170,12 +169,13 @@ class MazeProtocol(Protocol):
 # Figure placement data (per RFC §2.2)
 # ======================================================================
 
-# (row, col) → (figure_name, zone)
-FIGURE_PLACEMENTS = {
-    (1, 1): ("Leonardo da Vinci", "Art Gallery"),
-    (2, 2): ("Abraham Lincoln", "American History"),
-    (3, 3): ("Cleopatra", "Ancient History"),
-}
+FIGURES = [
+    ("Leonardo DiCaprio", "Hollywood Wing"),
+    ("Michael Jackson", "Music Hall"),
+    ("Abraham Lincoln", "History Gallery"),
+    ("Walt Disney", "Animation Vault"),
+    ("Taylor Swift", "Pop Culture Lounge"),
+]
 
 
 # ======================================================================
@@ -183,23 +183,16 @@ FIGURE_PLACEMENTS = {
 # ======================================================================
 
 class Maze:
-    """Concrete 5×5 Maze with staircase layout, fog of war, and trivia.
+    """Concrete 8×8 Maze with randomised layout, fog of war, and trivia.
 
-    Layout from interfaces.md §6:
-        (0,0) ENTRANCE
-        Row 0: (0,0)──(0,1)──(0,2)
-        South: (0,0)↔(1,0)
-        Row 1: (1,0)──(1,1)═🔒═(1,2)──(1,3)   Da Vinci at (1,1)
-        South: (1,2)↔(2,1)
-        Row 2: (2,1)──(2,2)═🔒═(2,3)──(2,4)   Lincoln at (2,2)
-        South: (2,3)↔(3,2)
-        Row 3: (3,2)──(3,3)═🔒═(3,4)           Cleopatra at (3,3)
-        South: (3,4)↔(4,4)
-        Row 4: (4,3)──(4,4) EXIT
+    Uses DFS-carved spanning tree + BFS critical-path analysis to place
+    5 locked gates guarded by pop-culture wax figures.
     """
 
-    def __init__(self, rows: int = 5, cols: int = 5,
-                 trivia_data: Optional[List[TriviaQuestion]] = None):
+    def __init__(self, rows: int = 8, cols: int = 8,
+                 trivia_data: Optional[List[TriviaQuestion]] = None,
+                 seed: Optional[int] = None):
+        self._seed = seed if seed is not None else random.randint(0, 2**31)
         self.rows = rows
         self.cols = cols
         self.player_position = Position(0, 0)
@@ -210,15 +203,18 @@ class Maze:
         self.rooms: Dict[Tuple[int, int], Room] = {}
 
         self._neighbors: Dict[Tuple[int, int, Direction], Tuple[int, int]] = {}
+        self._rng = random.Random(self._seed)
         self._build_maze()
 
     # ------------------------------------------------------------------
-    # Layout builder
+    # Randomized maze generator
     # ------------------------------------------------------------------
 
     def _build_maze(self):
-        """Build the 5×5 staircase layout."""
-        # Initialize all rooms with WALLs
+        """Build a randomized 8×8 maze using DFS + BFS critical path."""
+        num_figures = len(FIGURES)
+
+        # Step 1: Initialize all rooms with WALLs
         for r in range(self.rows):
             for c in range(self.cols):
                 self.rooms[(r, c)] = Room(
@@ -226,50 +222,123 @@ class Maze:
                     doors={d: DoorState.WALL for d in Direction},
                 )
 
-        # --- Horizontal connections ---
-        # Row 0: entrance corridor
-        self._set_door(0, 0, Direction.EAST, 0, 1, Direction.WEST, DoorState.OPEN)
-        self._set_door(0, 1, Direction.EAST, 0, 2, Direction.WEST, DoorState.OPEN)
+        # Step 2: Carve a spanning tree via randomized DFS
+        visited = set()
+        self._dfs_carve(0, 0, visited)
 
-        # Row 1: Da Vinci row
-        self._set_door(1, 0, Direction.EAST, 1, 1, Direction.WEST, DoorState.OPEN)
-        self._set_door(1, 1, Direction.EAST, 1, 2, Direction.WEST, DoorState.LOCKED)  # 🔒
-        self._set_door(1, 2, Direction.EAST, 1, 3, Direction.WEST, DoorState.OPEN)
+        # Step 3: Add extra edges (shortcuts) for exploration variety
+        self._add_shortcuts(max(4, self.rows // 2))
 
-        # Row 2: Lincoln row
-        self._set_door(2, 1, Direction.EAST, 2, 2, Direction.WEST, DoorState.OPEN)
-        self._set_door(2, 2, Direction.EAST, 2, 3, Direction.WEST, DoorState.LOCKED)  # 🔒
-        self._set_door(2, 3, Direction.EAST, 2, 4, Direction.WEST, DoorState.OPEN)
+        # Step 4: Find critical path from entrance to exit via BFS
+        path = self._bfs_path((0, 0), (self.rows - 1, self.cols - 1))
+        if not path or len(path) < num_figures + 3:
+            self.rooms.clear()
+            self._neighbors.clear()
+            self._build_maze()
+            return
 
-        # Row 3: Cleopatra row
-        self._set_door(3, 2, Direction.EAST, 3, 3, Direction.WEST, DoorState.OPEN)
-        self._set_door(3, 3, Direction.EAST, 3, 4, Direction.WEST, DoorState.LOCKED)  # 🔒
+        # Step 5: Place locked gates along the critical path
+        gate_positions = self._select_gate_edges(path, num_figures)
+        figure_rooms_list = []
+        for (r1, c1), direction, (r2, c2) in gate_positions:
+            self._set_door(r1, c1, direction, r2, c2, OPPOSITE[direction],
+                          DoorState.LOCKED)
+            # Figure goes on the entrance-side room of the gate
+            figure_rooms_list.append((r1, c1))
 
-        # Row 4: exit corridor
-        self._set_door(4, 3, Direction.EAST, 4, 4, Direction.WEST, DoorState.OPEN)
-
-        # --- Vertical (south) connections — staircase pattern ---
-        self._set_door(0, 0, Direction.SOUTH, 1, 0, Direction.NORTH, DoorState.OPEN)
-        self._set_door(1, 2, Direction.SOUTH, 2, 1, Direction.NORTH, DoorState.OPEN)  # staircase!
-        self._set_door(2, 3, Direction.SOUTH, 3, 2, Direction.NORTH, DoorState.OPEN)  # staircase!
-        self._set_door(3, 4, Direction.SOUTH, 4, 4, Direction.NORTH, DoorState.OPEN)
-
-        # Register diagonal neighbors for move() calculation
-        # (1,2) SOUTH -> (2,1) instead of (2,2)
-        self._neighbors[(1, 2, Direction.SOUTH)] = (2, 1)
-        self._neighbors[(2, 1, Direction.NORTH)] = (1, 2)
-        # (2,3) SOUTH -> (3,2) instead of (3,3)
-        self._neighbors[(2, 3, Direction.SOUTH)] = (3, 2)
-        self._neighbors[(3, 2, Direction.NORTH)] = (2, 3)
-
-        # --- Mark entrance and exit ---
+        # Step 6: Mark entrance and exit
         self.rooms[(0, 0)].is_entrance = True
-        self.rooms[(4, 4)].is_exit = True
+        self.rooms[(self.rows - 1, self.cols - 1)].is_exit = True
 
-        # --- Place figures (per RFC §2.2: figure_name + zone, not trivia) ---
-        for (r, c), (name, zone) in FIGURE_PLACEMENTS.items():
+        # Step 7: Place figures randomly in the gate-adjacent rooms
+        figures = list(FIGURES)
+        self._rng.shuffle(figures)
+        for (r, c), (name, zone) in zip(figure_rooms_list, figures):
             self.rooms[(r, c)].figure_name = name
             self.rooms[(r, c)].zone = zone
+
+        # Safety: verify solvability (locked treated as passable)
+        if not self.is_solvable():
+            self.rooms.clear()
+            self._neighbors.clear()
+            self._build_maze()
+
+    def _dfs_carve(self, r: int, c: int, visited: set):
+        """Randomized DFS to carve corridors (spanning tree)."""
+        visited.add((r, c))
+        directions = list(Direction)
+        self._rng.shuffle(directions)
+        for d in directions:
+            dr, dc = DELTA[d]
+            nr, nc = r + dr, c + dc
+            if (0 <= nr < self.rows and 0 <= nc < self.cols
+                    and (nr, nc) not in visited):
+                self._set_door(r, c, d, nr, nc, OPPOSITE[d], DoorState.OPEN)
+                self._dfs_carve(nr, nc, visited)
+
+    def _add_shortcuts(self, count: int):
+        """Add extra open edges to create loops and alternate paths."""
+        candidates = []
+        for r in range(self.rows):
+            for c in range(self.cols):
+                for d in [Direction.EAST, Direction.SOUTH]:
+                    dr, dc = DELTA[d]
+                    nr, nc = r + dr, c + dc
+                    if (0 <= nr < self.rows and 0 <= nc < self.cols):
+                        if self.rooms[(r, c)].doors[d] == DoorState.WALL:
+                            candidates.append((r, c, d, nr, nc))
+        self._rng.shuffle(candidates)
+        for r, c, d, nr, nc in candidates[:count]:
+            self._set_door(r, c, d, nr, nc, OPPOSITE[d], DoorState.OPEN)
+
+    def _bfs_path(self, start: Tuple[int, int],
+                  goal: Tuple[int, int]) -> List[Tuple[int, int]]:
+        """BFS shortest path through OPEN doors. Returns list of positions."""
+        queue = deque([(start, [start])])
+        visited = {start}
+        while queue:
+            (r, c), path = queue.popleft()
+            if (r, c) == goal:
+                return path
+            room = self.rooms[(r, c)]
+            for d in Direction:
+                if room.doors[d] == DoorState.OPEN:
+                    dr, dc = DELTA[d]
+                    nr, nc = r + dr, c + dc
+                    if (0 <= nr < self.rows and 0 <= nc < self.cols
+                            and (nr, nc) not in visited):
+                        visited.add((nr, nc))
+                        queue.append(((nr, nc), path + [(nr, nc)]))
+        return []
+
+    def _select_gate_edges(self, path: List[Tuple[int, int]],
+                           count: int):
+        """Select evenly spaced edges along the critical path for gates.
+
+        Returns list of ((r1,c1), direction, (r2,c2)) tuples.
+        Avoids gates on the first or last edge of the path.
+        """
+        edges = []
+        for i in range(len(path) - 1):
+            r1, c1 = path[i]
+            r2, c2 = path[i + 1]
+            # Determine direction
+            for d in Direction:
+                dr, dc = DELTA[d]
+                if r1 + dr == r2 and c1 + dc == c2:
+                    edges.append(((r1, c1), d, (r2, c2)))
+                    break
+
+        # Pick evenly spaced edges, avoiding very first and last
+        if len(edges) <= count + 1:
+            # Short path — take all middle edges
+            selected = edges[1:count + 1]
+        else:
+            # Space them out
+            step = len(edges) / (count + 1)
+            selected = [edges[int(step * (i + 1))] for i in range(count)]
+
+        return selected[:count]
 
     def _set_door(self, r1, c1, d1, r2, c2, d2, state):
         """Set bidirectional door state."""
@@ -279,6 +348,10 @@ class Maze:
     # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
+
+    def get_seed(self) -> int:
+        """Return the RNG seed used to generate this maze."""
+        return self._seed
 
     def get_rooms(self) -> Dict[Tuple[int, int], Room]:
         return self.rooms
@@ -340,8 +413,10 @@ class Maze:
         if self.player_position not in self.visited_positions:
             self.visited_positions.append(self.player_position)
 
-        # Win condition
-        if self.rooms[(new_row, new_col)].is_exit:
+        # Win condition — must defeat ALL figures before exit counts
+        total_figures = sum(1 for r in self.rooms.values() if r.figure_name)
+        if (self.rooms[(new_row, new_col)].is_exit
+                and len(self.defeated_figures) >= total_figures):
             self.game_status = GameStatus.WON
 
         return "staircase" if is_staircase else "moved"
@@ -407,7 +482,7 @@ class Maze:
     # ------------------------------------------------------------------
 
     def get_fog_map(self) -> List[List[FogMapCell]]:
-        """Return a 5×5 grid of FogMapCells with visibility info."""
+        """Return the grid of FogMapCells with visibility info."""
         visited_set = set((p.row, p.col) for p in self.visited_positions)
         player_rc = (self.player_position.row, self.player_position.col)
 

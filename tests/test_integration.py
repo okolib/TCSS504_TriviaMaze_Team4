@@ -23,6 +23,8 @@ from maze import (
 from db import Repository
 from main import Engine
 from conftest import _navigate_to_trivia_room
+from collections import deque
+from maze import DELTA, OPPOSITE
 
 TEST_DB = "test_integration.db"
 CORRECT_KEY = "B"
@@ -94,7 +96,10 @@ def test_game_state_to_dict_uses_rfc_names():
 def test_dict_to_game_state_roundtrip():
     """P0-27: Converting state → dict → state produces equivalent data."""
     m = Maze()
-    m.move(Direction.SOUTH)
+    # Move somewhere dynamic
+    room = m.get_room(m.get_player_position())
+    open_dir = next(d for d, s in room.doors.items() if s == DoorState.OPEN)
+    m.move(open_dir)
     original = m.get_game_state()
     d = Engine.game_state_to_dict(original)
     restored = Engine.dict_to_game_state(d)
@@ -116,53 +121,72 @@ def test_save_and_load_game_roundtrip():
     view = ViewStub()
     engine = Engine(m, repo, view, save_filepath="test_slot")
 
-    m.move(Direction.SOUTH)
+    # Move dynamically
+    room = m.get_room(m.get_player_position())
+    open_dir = next(d for d, s in room.doors.items() if s == DoorState.OPEN)
+    m.move(open_dir)
+    moved_pos = m.get_player_position()
     engine.save_game()
 
     m2 = Maze()
     engine2 = Engine(m2, repo, view, save_filepath="test_slot")
     success = engine2.load_game()
     assert success is True
-    assert m2.get_player_position() == Position(1, 0)
+    assert m2.get_player_position() == moved_pos
 
 
 # ===========================================================================
 # P0-29 to P0-31: Full Game Simulation (Maze-Rule Validation)
 # ===========================================================================
 
-def test_full_winning_game():
-    """P0-29: Simulate a complete winning run through the 5×5 maze.
+def _bfs_navigate(m, target_rc):
+    """BFS from current position to target, following OPEN doors."""
+    start = m.get_player_position()
+    visited = {(start.row, start.col)}
+    queue = deque([((start.row, start.col), [])])
+    while queue:
+        (r, c), moves = queue.popleft()
+        if (r, c) == target_rc:
+            for d in moves:
+                m.move(d)
+            return
+        room = m.get_room(Position(r, c))
+        for d in Direction:
+            if room.doors[d] == DoorState.OPEN:
+                dr, dc = DELTA[d]
+                nr, nc = r + dr, c + dc
+                if (0 <= nr < m.rows and 0 <= nc < m.cols
+                        and (nr, nc) not in visited):
+                    visited.add((nr, nc))
+                    queue.append(((nr, nc), moves + [d]))
 
-    Per RFC: Engine passes correct_key from DB to attempt_answer.
+
+def test_full_winning_game():
+    """P0-29: Simulate a complete winning run through the randomized maze.
+
+    Iteratively finds and defeats each figure, then navigates to exit.
     """
     m = Maze()
 
-    # Navigate to Da Vinci room (1,1) and answer correctly
-    m.move(Direction.SOUTH)   # (0,0) → (1,0)
-    m.move(Direction.EAST)    # (1,0) → (1,1) — Da Vinci
-    room = m.get_room(m.get_player_position())
-    assert room.figure_name is not None
-    assert m.attempt_answer(CORRECT_KEY, correct_key=CORRECT_KEY) == "correct"
+    # Count total figures
+    rooms = m.get_rooms()
+    total_figures = sum(1 for r in rooms.values() if r.figure_name is not None)
+    assert total_figures >= 3
 
-    # Navigate to Lincoln room (2,2)
-    m.move(Direction.EAST)    # (1,1) → (1,2)
-    m.move(Direction.SOUTH)   # (1,2) → (2,1) — staircase
-    m.move(Direction.EAST)    # (2,1) → (2,2) — Lincoln
-    room = m.get_room(m.get_player_position())
-    assert room.figure_name is not None
-    assert m.attempt_answer(CORRECT_KEY, correct_key=CORRECT_KEY) == "correct"
+    # Defeat all figures one at a time using the BFS-based helper
+    for _ in range(total_figures):
+        _navigate_to_trivia_room(m)
+        room = m.get_room(m.get_player_position())
+        assert room.figure_name is not None
+        assert room.figure_name not in m.defeated_figures
+        result = m.attempt_answer(CORRECT_KEY, correct_key=CORRECT_KEY)
+        assert result == "correct"
 
-    # Navigate to Cleopatra room (3,3)
-    m.move(Direction.EAST)    # (2,2) → (2,3)
-    m.move(Direction.SOUTH)   # (2,3) → (3,2) — staircase
-    m.move(Direction.EAST)    # (3,2) → (3,3) — Cleopatra
-    room = m.get_room(m.get_player_position())
-    assert room.figure_name is not None
-    assert m.attempt_answer(CORRECT_KEY, correct_key=CORRECT_KEY) == "correct"
+    assert len(m.defeated_figures) == total_figures
 
     # Navigate to exit
-    m.move(Direction.EAST)    # (3,3) → (3,4)
-    m.move(Direction.SOUTH)   # (3,4) → (4,4) — EXIT
+    exit_pos = next(pos for pos, room in rooms.items() if room.is_exit)
+    _bfs_navigate(m, exit_pos)
 
     assert m.get_game_status() == GameStatus.WON
 
