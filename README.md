@@ -219,3 +219,27 @@ All team members contributed to **bug hunting and fixes** across the codebase.
     ├── rfc_merged.md        # Design RFC
     └── BRANCH_CHANGELOG.md  # AI-readable branch changelog
 ```
+## Docker Setup
+
+### Prerequisites
+- Docker installed on your machine
+
+### Build the Image
+```bash
+cd Dockerfiles
+docker build -t maze .
+```
+
+### Run the Container
+```bash
+docker run --rm -it maze
+```
+
+### Pull from Docker Hub
+```bash
+docker pull bokoli/maze:v1
+docker run --rm -it bokoli/maze:v1
+```
+
+### Docker Hub
+Image available at: https://hub.docker.com/r/bokoli/maze
