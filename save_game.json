@@ -1,0 +1,129 @@
+{
+  "player_position": {
+    "row": 1,
+    "col": 0
+  },
+  "wax_meter": 0,
+  "game_status": "playing",
+  "answered_figures": [],
+  "visited_positions": [
+    {
+      "row": 0,
+      "col": 0
+    },
+    {
+      "row": 1,
+      "col": 0
+    }
+  ],
+  "door_states": [
+    {
+      "position": {
+        "row": 0,
+        "col": 0
+      },
+      "doors": {
+        "north": "wall",
+        "south": "open",
+        "east": "open",
+        "west": "wall"
+      }
+    },
+    {
+      "position": {
+        "row": 0,
+        "col": 1
+      },
+      "doors": {
+        "north": "wall",
+        "south": "wall",
+        "east": "open",
+        "west": "open"
+      }
+    },
+    {
+      "position": {
+        "row": 0,
+        "col": 2
+      },
+      "doors": {
+        "north": "wall",
+        "south": "open",
+        "east": "wall",
+        "west": "open"
+      }
+    },
+    {
+      "position": {
+        "row": 1,
+        "col": 0
+      },
+      "doors": {
+        "north": "open",
+        "south": "wall",
+        "east": "locked",
+        "west": "wall"
+      }
+    },
+    {
+      "position": {
+        "row": 1,
+        "col": 1
+      },
+      "doors": {
+        "north": "wall",
+        "south": "open",
+        "east": "wall",
+        "west": "locked"
+      }
+    },
+    {
+      "position": {
+        "row": 1,
+        "col": 2
+      },
+      "doors": {
+        "north": "open",
+        "south": "wall",
+        "east": "wall",
+        "west": "wall"
+      }
+    },
+    {
+      "position": {
+        "row": 2,
+        "col": 0
+      },
+      "doors": {
+        "north": "wall",
+        "south": "wall",
+        "east": "wall",
+        "west": "wall"
+      }
+    },
+    {
+      "position": {
+        "row": 2,
+        "col": 1
+      },
+      "doors": {
+        "north": "open",
+        "south": "wall",
+        "east": "locked",
+        "west": "wall"
+      }
+    },
+    {
+      "position": {
+        "row": 2,
+        "col": 2
+      },
+      "doors": {
+        "north": "wall",
+        "south": "wall",
+        "east": "wall",
+        "west": "locked"
+      }
+    }
+  ]
+}
